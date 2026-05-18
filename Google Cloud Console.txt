@@ -1,0 +1,9 @@
+Google Cloud Console
+└── APIs & Services
+    ├── Library          → включить Sheets API + Drive API
+    └── Credentials
+        ├── + CREATE CREDENTIALS → Service account (создать аккаунт)
+        └── Service Accounts (список)
+            └── клик по EMAIL
+                └── вкладка KEYS
+                    └── ADD KEY → JSON → скачать

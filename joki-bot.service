@@ -1,0 +1,17 @@
+[Unit]
+Description=Joki Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_SERVER_USER
+WorkingDirectory=/path/to/your/project
+EnvironmentFile=/path/to/your/project/.env
+ExecStart=/path/to/your/project/.venv/bin/python /path/to/your/project/main.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/path/to/your/project/bot.log
+StandardError=append:/path/to/your/project/bot.log
+
+[Install]
+WantedBy=multi-user.target

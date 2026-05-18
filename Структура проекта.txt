@@ -1,0 +1,8 @@
+medbot/
+├── config.py              # конфигурационные переменные
+├── google_sheets.py       # функции работы с таблицей
+├── handlers.py            # обработчики команд бота
+├── scheduler.py           # ежедневная проверка и рассылка
+├── main.py                # точка входа
+├── requirements.txt
+└── google_credentials.json
