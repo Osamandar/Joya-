@@ -1,4 +1,6 @@
 import gspread
+import json
+import os
 from datetime import datetime
 from pathlib import Path
 from oauth2client.service_account import ServiceAccountCredentials
@@ -133,12 +135,15 @@ def _normalize_admin_record(row_number: int, record: dict) -> dict | None:
 def get_client():
     global _client
     if _client is None:
-        if not GOOGLE_CREDENTIALS_FILE.is_file():
+        env_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        if env_json:
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(env_json), scope)
+        elif GOOGLE_CREDENTIALS_FILE.is_file():
+            creds = ServiceAccountCredentials.from_json_keyfile_name(str(GOOGLE_CREDENTIALS_FILE), scope)
+        else:
             raise RuntimeError(
-                f"Не найден файл {GOOGLE_CREDENTIALS_FILE.name}. "
-                "Скачай JSON ключ сервисного аккаунта и положи его в папку проекта."
+                f"Не найден файл {GOOGLE_CREDENTIALS_FILE.name} и не задана переменная GOOGLE_CREDENTIALS_JSON."
             )
-        creds = ServiceAccountCredentials.from_json_keyfile_name(str(GOOGLE_CREDENTIALS_FILE), scope)
         _client = gspread.authorize(creds)
     return _client
 
