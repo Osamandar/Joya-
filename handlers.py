@@ -128,9 +128,57 @@ def subdivision_keyboard(names: list[str]) -> ReplyKeyboardMarkup:
 # --- Admin panel: keyboards and simple dialog states ---
 class AdminActions(StatesGroup):
     waiting_check = State()
-    waiting_edit = State()
+    waiting_edit_filter = State()
+    waiting_edit_search = State()
+    waiting_edit_employee = State()
+    waiting_edit_field = State()
+    waiting_edit_value = State()
     waiting_approve = State()
     waiting_revoke = State()
+
+
+# Кнопки полей редактирования → внутренний ключ
+_EDIT_FIELD_BUTTONS = {
+    "📅 Дата окончания": "expiry",
+    "📱 Телефон": "phone",
+    "💼 Должность": "position",
+    "🏢 Подразделение": "subdivision",
+    "✅ Главная группа": "main_group",
+    "👥 Подгруппа": "sub_group",
+}
+
+
+def edit_field_keyboard() -> ReplyKeyboardMarkup:
+    keys = list(_EDIT_FIELD_BUTTONS)
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=keys[0]), KeyboardButton(text=keys[1])],
+            [KeyboardButton(text=keys[2]), KeyboardButton(text=keys[3])],
+            [KeyboardButton(text=keys[4]), KeyboardButton(text=keys[5])],
+            [KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def yes_no_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Да"), KeyboardButton(text="Нет")],
+            [KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def cancel_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 
 def get_admin_keyboard() -> ReplyKeyboardMarkup:
@@ -244,41 +292,157 @@ async def btn_start_edit(message: Message, state: FSMContext):
     if not is_admin_user(message.from_user.id):
         await message.answer("У вас нет прав для этой команды.")
         return
-    await state.set_state(AdminActions.waiting_edit)
-    await message.answer(
-        "Введите изменение в формате: поле | ФИО или телефон | значение\n"
-        "Примеры:\n"
-        "дата | Иванов Иван | 31-12-2026\n"
-        "телефон | Иванов Иван | +79161234567",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    subdivisions = get_subdivision_names()
+    pairs = [subdivisions[i:i+2] for i in range(0, len(subdivisions), 2)]
+    rows = [[KeyboardButton(text=f"🏢 {n}") for n in pair] for pair in pairs]
+    rows.append([KeyboardButton(text="👥 Все сотрудники"), KeyboardButton(text="🔍 Поиск по имени")])
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+    await state.set_state(AdminActions.waiting_edit_filter)
+    await message.answer("Выберите подразделение или способ поиска:", reply_markup=kb)
 
 
-@router.message(AdminActions.waiting_edit)
-async def action_edit(message: Message, state: FSMContext):
-    raw = (message.text or "").strip()
-    parts = [p.strip() for p in raw.split("|")]
-    if len(parts) != 3 or not all(parts):
-        await message.answer("Нужен формат: поле | поиск | значение")
+@router.message(AdminActions.waiting_edit_filter)
+async def action_edit_filter(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "❌ Отмена":
+        await state.clear()
+        kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+        await message.answer("Отменено.", reply_markup=kb)
         return
+    if text == "🔍 Поиск по имени":
+        await state.set_state(AdminActions.waiting_edit_search)
+        await message.answer("Введите ФИО или телефон:", reply_markup=cancel_keyboard())
+        return
+    if text == "👥 Все сотрудники":
+        employees = get_employee_rows(include_without_chat=True, with_row_numbers=True)
+    elif text.startswith("🏢 "):
+        subdivision = text.removeprefix("🏢 ")
+        employees = [
+            e for e in get_employee_rows(include_without_chat=True, with_row_numbers=True)
+            if (e.get("Подразделение") or "").strip() == subdivision
+        ]
+    else:
+        await message.answer("Выберите вариант из списка.")
+        return
+    await _show_employee_list(message, state, employees)
 
-    field = resolve_edit_field(parts[0])
+
+@router.message(AdminActions.waiting_edit_search)
+async def action_edit_search(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "❌ Отмена":
+        await state.clear()
+        kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+        await message.answer("Отменено.", reply_markup=kb)
+        return
+    employees = search_employees(text.lower(), include_without_chat=True)
+    await _show_employee_list(message, state, employees)
+
+
+async def _show_employee_list(message: Message, state: FSMContext, employees: list):
+    if not employees:
+        await message.answer("Сотрудники не найдены. Попробуйте другой запрос.", reply_markup=cancel_keyboard())
+        return
+    MAX = 20
+    shown = employees[:MAX]
+    name_counts: dict[str, int] = {}
+    for e in shown:
+        name_counts[e["ФИО"]] = name_counts.get(e["ФИО"], 0) + 1
+    emp_map: dict[str, int] = {}
+    rows = []
+    for e in shown:
+        fio = e["ФИО"]
+        label = f"{fio} ({e.get('Телефон') or '—'})" if name_counts[fio] > 1 else fio
+        emp_map[label] = e["row_number"]
+        rows.append([KeyboardButton(text=label)])
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+    note = f" (показаны первые {MAX}, уточните поиск)" if len(employees) > MAX else ""
+    await state.update_data(emp_map=emp_map)
+    await state.set_state(AdminActions.waiting_edit_employee)
+    await message.answer(f"Найдено: {len(employees)}{note}\n\nВыберите сотрудника:", reply_markup=kb)
+
+
+@router.message(AdminActions.waiting_edit_employee)
+async def action_edit_employee(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "❌ Отмена":
+        await state.clear()
+        kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+        await message.answer("Отменено.", reply_markup=kb)
+        return
+    data = await state.get_data()
+    emp_map: dict = data.get("emp_map", {})
+    if text not in emp_map:
+        await message.answer("Выберите сотрудника из списка.")
+        return
+    await state.update_data(edit_row=emp_map[text], edit_fio=text)
+    await state.set_state(AdminActions.waiting_edit_field)
+    await message.answer(f"Сотрудник: {text}\n\nЧто хотите изменить?", reply_markup=edit_field_keyboard())
+
+
+@router.message(AdminActions.waiting_edit_field)
+async def action_edit_field(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "❌ Отмена":
+        await state.clear()
+        kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+        await message.answer("Отменено.", reply_markup=kb)
+        return
+    field = _EDIT_FIELD_BUTTONS.get(text)
     if not field:
-        await message.answer("Неизвестное поле. Доступно: дата, телефон, должность, подразделение, главная, подгруппа.")
+        await message.answer("Выберите поле из списка.", reply_markup=edit_field_keyboard())
         return
+    await state.update_data(edit_field=field)
+    await state.set_state(AdminActions.waiting_edit_value)
+    if field == "expiry":
+        await message.answer(
+            "Введите новую дату окончания медкнижки\n\nФормат: ДД-ММ-ГГГГ\nПример: 31-12-2026",
+            reply_markup=cancel_keyboard(),
+        )
+    elif field == "phone":
+        await message.answer(
+            "Введите новый номер телефона\n\nПример: +79161234567 или 89161234567",
+            reply_markup=cancel_keyboard(),
+        )
+    elif field == "position":
+        await message.answer("Выберите новую должность:", reply_markup=position_keyboard())
+    elif field == "subdivision":
+        subdivisions = get_subdivision_names()
+        if subdivisions:
+            await message.answer("Выберите новое подразделение:", reply_markup=subdivision_keyboard(subdivisions))
+        else:
+            await message.answer("Введите название подразделения:", reply_markup=cancel_keyboard())
+    elif field in ("main_group", "sub_group"):
+        label = "в главной группе" if field == "main_group" else "в подгруппе"
+        await message.answer(f"Сотрудник состоит {label}?", reply_markup=yes_no_keyboard())
 
-    employee, error_text = find_single_employee(parts[1])
-    if error_text:
-        await message.answer(error_text)
+
+@router.message(AdminActions.waiting_edit_value)
+async def action_edit_value(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "❌ Отмена":
+        await state.clear()
+        kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+        await message.answer("Отменено.", reply_markup=kb)
         return
-
-    assert employee is not None
-    edit_error = _apply_employee_edit(employee["row_number"], field, parts[2])
-    if edit_error:
-        await message.answer(edit_error)
+    data = await state.get_data()
+    row_number: int = data["edit_row"]
+    field: str = data["edit_field"]
+    error = _apply_employee_edit(row_number, field, text)
+    if error:
+        if field == "position":
+            await message.answer(error, reply_markup=position_keyboard())
+        elif field == "subdivision":
+            subdivisions = get_subdivision_names()
+            await message.answer(error, reply_markup=subdivision_keyboard(subdivisions) if subdivisions else cancel_keyboard())
+        elif field in ("main_group", "sub_group"):
+            await message.answer(error, reply_markup=yes_no_keyboard())
+        else:
+            await message.answer(error, reply_markup=cancel_keyboard())
         return
-
-    await message.answer("Данные сотрудника обновлены:\n\n" + employee_card(get_employee_row_dict(employee["row_number"])))
+    await message.answer("Данные обновлены:\n\n" + employee_card(get_employee_row_dict(row_number)))
     await state.clear()
     kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
     await message.answer("Возвращаю в меню:", reply_markup=kb)
