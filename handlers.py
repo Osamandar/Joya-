@@ -199,7 +199,7 @@ async def btn_list_7(message: Message):
     else:
         reply = "\n".join(
             [
-                f"{e['ФИО']} ({e.get('Должность') or '—'}, {e.get('Подразделение') or '—'}) - {e['Дата окончания']}"
+                f"{e['ФИО']} ({e.get('Должность') or '—'}, {e.get('Подразделение') or '—'}) - {fmt_date(e['Дата окончания'])}"
                 for e in expiring
             ]
         )
@@ -246,7 +246,7 @@ async def btn_start_edit(message: Message, state: FSMContext):
     await message.answer(
         "Введите изменение в формате: поле | ФИО или телефон | значение\n"
         "Примеры:\n"
-        "дата | Иванов Иван | 2026-12-31\n"
+        "дата | Иванов Иван | 31-12-2026\n"
         "телефон | Иванов Иван | +79161234567",
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -389,6 +389,16 @@ def resolve_subdivision(position: str) -> str | None:
     return None
 
 
+def fmt_date(iso_str: str) -> str:
+    """Converts YYYY-MM-DD (storage) → DD-MM-YYYY (display)."""
+    if not iso_str:
+        return iso_str
+    try:
+        return datetime.strptime(iso_str, "%Y-%m-%d").strftime("%d-%m-%Y")
+    except ValueError:
+        return iso_str
+
+
 def pd_consent_value() -> str:
     return f"да {datetime.now().strftime('%Y-%m-%d')}"
 
@@ -489,7 +499,7 @@ def employee_card(employee: dict) -> str:
     fio = employee.get("ФИО") or "—"
     phone = employee.get("Телефон") or "—"
     position = employee.get("Должность") or "—"
-    expiry = employee.get("Дата окончания") or "—"
+    expiry = fmt_date(employee.get("Дата окончания") or "") or "—"
     chat_id = employee.get("Chat ID") or "—"
     sub = employee.get("Подразделение") or "—"
     in_main = employee.get("В главной группе") or "—"
@@ -530,9 +540,9 @@ def _apply_employee_edit(row_number: int, field: str, new_value: str) -> str | N
     """Applies one field update. Returns an error string if validation fails, None on success."""
     if field == "expiry":
         try:
-            expiry_date = datetime.strptime(new_value, "%Y-%m-%d").date()
+            expiry_date = datetime.strptime(new_value, "%d-%m-%Y").date()
         except ValueError:
-            return "Дата должна быть в формате ГГГГ-ММ-ДД, например 2026-12-31."
+            return "Дата должна быть в формате ДД-ММ-ГГГГ, например 31-12-2026."
         update_employee_cell(row_number, COL_EXPIRY, expiry_date.isoformat())
         delta = (expiry_date - datetime.now().date()).days
         if delta <= 0:
@@ -997,7 +1007,7 @@ async def cmd_list(message: Message):
     else:
         reply = "\n".join(
             [
-                f"{e['ФИО']} ({e['Должность']}, {e.get('Подразделение') or '—'}) - {e['Дата окончания']}"
+                f"{e['ФИО']} ({e['Должность']}, {e.get('Подразделение') or '—'}) - {fmt_date(e['Дата окончания'])}"
                 for e in expiring
             ]
         )
@@ -1034,7 +1044,7 @@ async def cmd_status(message: Message):
             continue
 
         delta = (expiry - datetime.now().date()).days
-        line = f"{employee['ФИО']} - {expiry_str}"
+        line = f"{employee['ФИО']} - {fmt_date(expiry_str)}"
         if delta < 0:
             expired.append(line)
         elif delta == 0:
@@ -1073,7 +1083,7 @@ async def cmd_edit(message: Message):
     if len(args) < 2:
         await message.answer(
             "Использование:\n"
-            "/edit дата | Иванов Иван | 2026-12-31\n"
+            "/edit дата | Иванов Иван | 31-12-2026\n"
             "/edit телефон | Иванов Иван | +79161234567\n"
             "/edit подразделение | Иванов Иван | Кухня\n"
             "/edit главная | Иванов Иван | нет"
@@ -1084,7 +1094,7 @@ async def cmd_edit(message: Message):
     if len(parts) != 3 or not all(parts):
         await message.answer(
             "Нужен формат: /edit поле | поиск | значение\n"
-            "Пример: /edit дата | Иванов Иван | 2026-12-31"
+            "Пример: /edit дата | Иванов Иван | 31-12-2026"
         )
         return
 

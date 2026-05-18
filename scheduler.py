@@ -13,6 +13,14 @@ from google_sheets import (
 import logging
 
 
+def _fmt_date(iso_str: str) -> str:
+    """Converts YYYY-MM-DD (storage) → DD-MM-YYYY (display)."""
+    try:
+        return datetime.strptime(iso_str, "%Y-%m-%d").strftime("%d-%m-%Y")
+    except (ValueError, TypeError):
+        return iso_str
+
+
 def _parse_chat_id(raw_value: str) -> int | None:
     value = (raw_value or "").strip()
     if value and value.lstrip("-").isdigit():
@@ -52,7 +60,7 @@ async def daily_check(bot: Bot):
         status = (emp.get("Статус уведомлений") or "").strip().lower()
         fio = emp["ФИО"]
         pos = emp["Должность"]
-        expiry_str = emp["Дата окончания"]
+        expiry_str = _fmt_date(emp["Дата окончания"])
 
         if delta <= 0:
             if status != "expired":
