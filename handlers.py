@@ -6,6 +6,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import re
 
+from commands import set_user_commands
+
 from google_sheets import (
     ADMIN_ROLE_ADMIN,
     ADMIN_ROLE_OWNER,
@@ -315,6 +317,7 @@ async def action_approve(message: Message, state: FSMContext):
             return
     target_chat_id = int(chat_id_raw)
     admin = approve_admin_access(chat_id=target_chat_id, granted_by=actor_identity(message), role=role)
+    await set_user_commands(message.bot, target_chat_id, admin["role"])
     await message.answer(f"Доступ выдан.\n\n{admin_card(admin)}")
     try:
         kb = get_owner_keyboard() if admin["role"] == ADMIN_ROLE_OWNER else get_admin_keyboard()
@@ -322,7 +325,7 @@ async def action_approve(message: Message, state: FSMContext):
             target_chat_id,
             "Вам выдан админ-доступ в боте.\n"
             f"Роль: {admin_role_label(admin['role'])}\n"
-            "Доступные команды: /check, /list, /status, /edit, /whoami",
+            "Нажмите / чтобы увидеть доступные команды.",
             reply_markup=kb,
         )
     except Exception:
@@ -356,6 +359,7 @@ async def action_revoke(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("Возвращаю в меню.", reply_markup=get_owner_keyboard())
         return
+    await set_user_commands(message.bot, target_chat_id, "default")
     await message.answer(f"Доступ отключен.\n\n{admin_card(admin)}")
     try:
         await message.bot.send_message(target_chat_id, "Ваш админ-доступ в боте отключён.")
@@ -902,7 +906,7 @@ async def cmd_approve_admin(message: Message):
         granted_by=actor_identity(message),
         role=role,
     )
-
+    await set_user_commands(message.bot, target_chat_id, admin["role"])
     await message.answer(
         f"Доступ выдан.\n\n{admin_card(admin)}"
     )
@@ -911,7 +915,7 @@ async def cmd_approve_admin(message: Message):
             target_chat_id,
             "Вам выдан админ-доступ в боте.\n"
             f"Роль: {admin_role_label(admin['role'])}\n"
-            "Доступные команды: /check, /list, /status, /edit, /whoami"
+            "Нажмите / чтобы увидеть доступные команды."
         )
     except Exception:
         pass
@@ -942,7 +946,7 @@ async def cmd_revoke_admin(message: Message):
     if not admin:
         await message.answer("Админ с таким Chat ID не найден.")
         return
-
+    await set_user_commands(message.bot, target_chat_id, "default")
     await message.answer(
         f"Доступ отключен.\n\n{admin_card(admin)}"
     )

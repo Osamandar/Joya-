@@ -7,6 +7,7 @@ from config import BOT_TOKEN, SCHEDULE_HOUR, SCHEDULE_MINUTE
 from google_sheets import ensure_google_sheets_ready
 from handlers import router
 from scheduler import daily_check
+from commands import setup_commands
 
 logging.basicConfig(level=logging.INFO)
 
@@ -24,6 +25,8 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
+
+    await setup_commands(bot)
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
