@@ -18,6 +18,7 @@ from google_sheets import (
     get_admin_rows,
     search_employees,
     get_cell,
+    get_employee_row_dict,
     get_employee_rows,
     get_subdivision_names,
     get_all_employees,
@@ -182,18 +183,19 @@ async def btn_list_7(message: Message):
     from datetime import timedelta
 
     days = 7
-    target_date = datetime.now().date() + timedelta(days=days)
+    today = datetime.now().date()
+    cutoff_date = today + timedelta(days=days)
     employees = get_all_employees()
     expiring = []
     for e in employees:
         try:
             expiry = datetime.strptime(e.get("Дата окончания", ""), "%Y-%m-%d").date()
-            if expiry == target_date:
+            if today <= expiry <= cutoff_date:
                 expiring.append(e)
         except Exception:
             continue
     if not expiring:
-        await message.answer(f"Нет сотрудников с окончанием через {days} дн.")
+        await message.answer(f"Нет сотрудников с окончанием в течение {days} дн.")
     else:
         reply = "\n".join(
             [
@@ -269,72 +271,12 @@ async def action_edit(message: Message, state: FSMContext):
         return
 
     assert employee is not None
-    row_number = employee["row_number"]
-    new_value = parts[2]
+    edit_error = _apply_employee_edit(employee["row_number"], field, parts[2])
+    if edit_error:
+        await message.answer(edit_error)
+        return
 
-    if field == "expiry":
-        try:
-            expiry_date = datetime.strptime(new_value, "%Y-%m-%d").date()
-        except ValueError:
-            await message.answer("Дата должна быть в формате ГГГГ-ММ-ДД, например 2026-12-31.")
-            return
-        update_employee_cell(row_number, COL_EXPIRY, expiry_date.isoformat())
-        delta = (expiry_date - datetime.now().date()).days
-        if delta <= 0:
-            set_row_red(row_number)
-            set_employee_status(row_number, "expired")
-        else:
-            set_row_default(row_number)
-            clear_employee_status(row_number)
-
-    elif field == "phone":
-        normalized_phone = normalize_phone_input(new_value)
-        if not normalized_phone:
-            await message.answer("Телефон должен быть в формате +79161234567.")
-            return
-        update_employee_cell(row_number, COL_PHONE, normalized_phone)
-
-    elif field == "position":
-        update_employee_cell(row_number, COL_POSITION, new_value)
-
-    elif field == "subdivision":
-        subdivisions = get_subdivision_names()
-        normalized_sub = "" if new_value in {"-", "пусто", "none"} else new_value
-        if subdivisions and normalized_sub and normalized_sub not in subdivisions:
-            names_text = "\n".join(f"• {name}" for name in subdivisions)
-            await message.answer(
-                "Такого подразделения нет в листе «Группы». Доступные варианты:\n\n" f"{names_text}"
-            )
-            return
-        update_employee_cell(row_number, COL_SUBDIVISION, normalized_sub)
-
-    elif field == "main_group":
-        parsed = parse_yes_no(new_value)
-        if not parsed:
-            await message.answer("Для поля «главная» используй значение да или нет.")
-            return
-        update_employee_cell(row_number, COL_IN_MAIN, parsed)
-
-    elif field == "sub_group":
-        parsed = parse_yes_no(new_value)
-        if not parsed:
-            await message.answer("Для поля «подгруппа» используй значение да или нет.")
-            return
-        update_employee_cell(row_number, COL_IN_SUB, parsed)
-
-    refreshed = {
-        "ФИО": get_cell(row_number, 1),
-        "Телефон": get_cell(row_number, COL_PHONE),
-        "Должность": get_cell(row_number, COL_POSITION),
-        "Дата окончания": get_cell(row_number, COL_EXPIRY),
-        "Chat ID": get_cell(row_number, COL_CHAT_ID),
-        "В главной группе": get_cell(row_number, COL_IN_MAIN),
-        "В группе подразделения": get_cell(row_number, COL_IN_SUB),
-        "Подразделение": get_cell(row_number, COL_SUBDIVISION),
-        "Статус уведомлений": get_cell(row_number, COL_STATUS),
-    }
-    await message.answer("Данные сотрудника обновлены:\n\n" + employee_card(refreshed))
-
+    await message.answer("Данные сотрудника обновлены:\n\n" + employee_card(get_employee_row_dict(employee["row_number"])))
     await state.clear()
     kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
     await message.answer("Возвращаю в меню:", reply_markup=kb)
@@ -582,6 +524,48 @@ def find_single_employee(query: str) -> tuple[dict | None, str | None]:
             suffix = f"\n\nНайдено {len(matches)} совпадений. Уточните ФИО или номер телефона."
         return None, "Найдено несколько сотрудников:\n" + "\n".join(lines) + suffix
     return matches[0], None
+
+
+def _apply_employee_edit(row_number: int, field: str, new_value: str) -> str | None:
+    """Applies one field update. Returns an error string if validation fails, None on success."""
+    if field == "expiry":
+        try:
+            expiry_date = datetime.strptime(new_value, "%Y-%m-%d").date()
+        except ValueError:
+            return "Дата должна быть в формате ГГГГ-ММ-ДД, например 2026-12-31."
+        update_employee_cell(row_number, COL_EXPIRY, expiry_date.isoformat())
+        delta = (expiry_date - datetime.now().date()).days
+        if delta <= 0:
+            set_row_red(row_number)
+            set_employee_status(row_number, "expired")
+        else:
+            set_row_default(row_number)
+            clear_employee_status(row_number)
+    elif field == "phone":
+        normalized_phone = normalize_phone_input(new_value)
+        if not normalized_phone:
+            return "Телефон должен быть в формате +79161234567."
+        update_employee_cell(row_number, COL_PHONE, normalized_phone)
+    elif field == "position":
+        update_employee_cell(row_number, COL_POSITION, new_value)
+    elif field == "subdivision":
+        subdivisions = get_subdivision_names()
+        normalized_sub = "" if new_value in {"-", "пусто", "none"} else new_value
+        if subdivisions and normalized_sub and normalized_sub not in subdivisions:
+            names_text = "\n".join(f"• {name}" for name in subdivisions)
+            return f"Такого подразделения нет в листе «Группы». Доступные варианты:\n\n{names_text}"
+        update_employee_cell(row_number, COL_SUBDIVISION, normalized_sub)
+    elif field == "main_group":
+        parsed = parse_yes_no(new_value)
+        if not parsed:
+            return "Для поля «главная» используй значение да или нет."
+        update_employee_cell(row_number, COL_IN_MAIN, parsed)
+    elif field == "sub_group":
+        parsed = parse_yes_no(new_value)
+        if not parsed:
+            return "Для поля «подгруппа» используй значение да или нет."
+        update_employee_cell(row_number, COL_IN_SUB, parsed)
+    return None
 
 
 async def notify_admins(message: Message, text: str):
@@ -997,18 +981,19 @@ async def cmd_list(message: Message):
 
     from datetime import timedelta
 
-    target_date = datetime.now().date() + timedelta(days=days)
+    today = datetime.now().date()
+    cutoff_date = today + timedelta(days=days)
     employees = get_all_employees()
     expiring = []
     for e in employees:
         try:
             expiry = datetime.strptime(e["Дата окончания"], "%Y-%m-%d").date()
-            if expiry == target_date:
+            if today <= expiry <= cutoff_date:
                 expiring.append(e)
         except Exception:
             continue
     if not expiring:
-        await message.answer(f"Нет сотрудников с окончанием через {days} дн.")
+        await message.answer(f"Нет сотрудников с окончанием в течение {days} дн.")
     else:
         reply = "\n".join(
             [
@@ -1116,70 +1101,9 @@ async def cmd_edit(message: Message):
         return
 
     assert employee is not None
-    row_number = employee["row_number"]
-    new_value = parts[2]
+    edit_error = _apply_employee_edit(employee["row_number"], field, parts[2])
+    if edit_error:
+        await message.answer(edit_error)
+        return
 
-    if field == "expiry":
-        try:
-            expiry_date = datetime.strptime(new_value, "%Y-%m-%d").date()
-        except ValueError:
-            await message.answer("Дата должна быть в формате ГГГГ-ММ-ДД, например 2026-12-31.")
-            return
-
-        update_employee_cell(row_number, COL_EXPIRY, expiry_date.isoformat())
-        delta = (expiry_date - datetime.now().date()).days
-        if delta <= 0:
-            set_row_red(row_number)
-            set_employee_status(row_number, "expired")
-        else:
-            set_row_default(row_number)
-            clear_employee_status(row_number)
-
-    elif field == "phone":
-        normalized_phone = normalize_phone_input(new_value)
-        if not normalized_phone:
-            await message.answer("Телефон должен быть в формате +79161234567.")
-            return
-        update_employee_cell(row_number, COL_PHONE, normalized_phone)
-
-    elif field == "position":
-        update_employee_cell(row_number, COL_POSITION, new_value)
-
-    elif field == "subdivision":
-        subdivisions = get_subdivision_names()
-        normalized_sub = "" if new_value in {"-", "пусто", "none"} else new_value
-        if subdivisions and normalized_sub and normalized_sub not in subdivisions:
-            names_text = "\n".join(f"• {name}" for name in subdivisions)
-            await message.answer(
-                "Такого подразделения нет в листе «Группы». Доступные варианты:\n\n"
-                f"{names_text}"
-            )
-            return
-        update_employee_cell(row_number, COL_SUBDIVISION, normalized_sub)
-
-    elif field == "main_group":
-        parsed = parse_yes_no(new_value)
-        if not parsed:
-            await message.answer("Для поля «главная» используй значение да или нет.")
-            return
-        update_employee_cell(row_number, COL_IN_MAIN, parsed)
-
-    elif field == "sub_group":
-        parsed = parse_yes_no(new_value)
-        if not parsed:
-            await message.answer("Для поля «подгруппа» используй значение да или нет.")
-            return
-        update_employee_cell(row_number, COL_IN_SUB, parsed)
-
-    refreshed = {
-        "ФИО": get_cell(row_number, 1),
-        "Телефон": get_cell(row_number, COL_PHONE),
-        "Должность": get_cell(row_number, COL_POSITION),
-        "Дата окончания": get_cell(row_number, COL_EXPIRY),
-        "Chat ID": get_cell(row_number, COL_CHAT_ID),
-        "В главной группе": get_cell(row_number, COL_IN_MAIN),
-        "В группе подразделения": get_cell(row_number, COL_IN_SUB),
-        "Подразделение": get_cell(row_number, COL_SUBDIVISION),
-        "Статус уведомлений": get_cell(row_number, COL_STATUS),
-    }
-    await message.answer("Данные сотрудника обновлены:\n\n" + employee_card(refreshed))
+    await message.answer("Данные сотрудника обновлены:\n\n" + employee_card(get_employee_row_dict(employee["row_number"])))

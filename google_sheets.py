@@ -562,3 +562,22 @@ def clear_employee_status(row_number: int):
 def update_employee_cell(row_number: int, col: int, value: str):
     ws = get_employees_sheet()
     ws.update_cell(row_number, col, value)
+
+
+def get_employee_row_dict(row_number: int) -> dict:
+    """Returns all employee fields using a single API call."""
+    ws = get_employees_sheet()
+    values = ws.row_values(row_number)
+    while len(values) < COL_STATUS:
+        values.append("")
+    return {
+        "ФИО": values[COL_FIO - 1].strip(),
+        "Телефон": values[COL_PHONE - 1].strip(),
+        "Должность": values[COL_POSITION - 1].strip(),
+        "Дата окончания": values[COL_EXPIRY - 1].strip(),
+        "Chat ID": values[COL_CHAT_ID - 1].strip(),
+        "В главной группе": values[COL_IN_MAIN - 1].strip(),
+        "В группе подразделения": values[COL_IN_SUB - 1].strip(),
+        "Подразделение": values[COL_SUBDIVISION - 1].strip(),
+        "Статус уведомлений": values[COL_STATUS - 1].strip(),
+    }
