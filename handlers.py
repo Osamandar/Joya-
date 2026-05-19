@@ -58,6 +58,7 @@ from config import (
 router = Router()
 
 CONSENT_YES = "✅ Согласен на обработку ПДн"
+CONSENT_NO = "❌ Не согласен"
 
 
 class Registration(StatesGroup):
