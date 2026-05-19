@@ -63,6 +63,9 @@ async def daily_check(bot: Bot):
         pos = emp["Должность"]
         expiry_str = _fmt_date(emp["Дата окончания"])
 
+        if status == "в процессе":
+            continue
+
         if delta <= 0:
             if status != "expired":
                 set_row_red(row_number)
