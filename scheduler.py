@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from aiogram import Bot
 from config import MAIN_GROUP_ID, DEVELOPER_CHAT_ID
@@ -84,11 +85,13 @@ async def daily_check(bot: Bot):
             if chat_id:
                 msg = f"Уважаемый(ая) {fio}, срок вашей медицинской книжки истекает {expiry_str} (через {delta} дн.)."
                 await send_safe(bot, chat_id, msg)
+                await asyncio.sleep(0.15)
             admins_list.add(f"{fio} ({pos}) - {expiry_str}")
         elif delta in (5, 4):
             if chat_id:
                 msg = f"Уважаемый(ая) {fio}, срок вашей медицинской книжки истекает {expiry_str} (через {delta} дн.)."
                 await send_safe(bot, chat_id, msg)
+                await asyncio.sleep(0.15)
             admins_list.add(f"{fio} ({pos}) - {expiry_str}")
             sub_name = (emp.get("Подразделение") or "").strip()
             if in_sub and sub_name and sub_name in sub_groups:
@@ -103,19 +106,23 @@ async def daily_check(bot: Bot):
         text = "Срок медкнижки истёк или истекает сегодня:\n" + "\n".join(sorted(admins_urgent_list))
         for admin_id in admins:
             await send_safe(bot, admin_id, text)
+            await asyncio.sleep(0.15)
 
     if admins_list:
         text = "Напоминание о медкнижках:\n" + "\n".join(sorted(admins_list))
         for admin_id in admins:
             await send_safe(bot, admin_id, text)
+            await asyncio.sleep(0.15)
 
     for group_id, items in sub_group_msgs.items():
         text = "Внимание! Срок медкнижек истекает через 4-5 дней у следующих сотрудников:\n" + "\n".join(items)
         await send_safe(bot, group_id, text)
+        await asyncio.sleep(0.15)
 
     if main_group_list and MAIN_GROUP_ID:
         text = "Внимание! Через 1-3 дня истекают медкнижки у сотрудников:\n" + "\n".join(main_group_list)
         await send_safe(bot, MAIN_GROUP_ID, text)
+        await asyncio.sleep(0.15)
 
 
 async def send_safe(bot: Bot, chat_id: int | None, text: str):
