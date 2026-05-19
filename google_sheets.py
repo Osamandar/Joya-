@@ -1,6 +1,7 @@
 import gspread
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from oauth2client.service_account import ServiceAccountCredentials
@@ -35,6 +36,31 @@ _employees_service_column_ready = False
 _admin_sheet_ready = False
 _client = None
 _sheet = None
+
+_CACHE_TTL_EMPLOYEES = 60
+_CACHE_TTL_ADMINS = 300
+_CACHE_TTL_GROUPS = 600
+_cache: dict[str, tuple] = {}
+
+
+def _cache_get(key: str):
+    entry = _cache.get(key)
+    if entry is None:
+        return None
+    value, expires_at = entry
+    if time.time() < expires_at:
+        return value
+    del _cache[key]
+    return None
+
+
+def _cache_set(key: str, value, ttl: int):
+    _cache[key] = (value, time.time() + ttl)
+
+
+def _cache_clear(*keys: str):
+    for key in keys:
+        _cache.pop(key, None)
 
 
 def normalize_phone(phone) -> str:
@@ -225,6 +251,7 @@ def find_employee_by_fio_phone(fio: str, phone: str):
 def update_chat_id(row_number: int, chat_id: int):
     ws = get_employees_sheet()
     ws.update_cell(row_number, COL_CHAT_ID, str(chat_id))
+    _cache_clear("employee_rows")
 
 
 def get_cell(row_number: int, col: int) -> str:
@@ -236,11 +263,13 @@ def get_cell(row_number: int, col: int) -> str:
 def update_subdivision(row_number: int, subdivision: str):
     ws = get_employees_sheet()
     ws.update_cell(row_number, COL_SUBDIVISION, subdivision)
+    _cache_clear("employee_rows")
 
 
 def update_pd_consent(row_number: int, consent: str):
     ws = get_employees_sheet()
     ws.update_cell(row_number, COL_PD_CONSENT, consent)
+    _cache_clear("employee_rows")
 
 
 def add_employee_row(
@@ -269,6 +298,7 @@ def add_employee_row(
         "",
     ]
     ws.append_row(row, value_input_option="USER_ENTERED")
+    _cache_clear("employee_rows")
     return ws.row_count
 
 
@@ -292,11 +322,28 @@ def complete_employee_registration(
         ws.update_cell(row_number, COL_IN_MAIN, "да")
     if not get_cell(row_number, COL_IN_SUB):
         ws.update_cell(row_number, COL_IN_SUB, "да")
+    _cache_clear("employee_rows")
 
 
 def get_subdivision_names():
     """Список названий подразделений из листа «Группы»."""
     return list(get_sub_groups().keys())
+
+
+def _get_raw_employees() -> list[dict]:
+    """Fetches all employee rows with row_number from Sheets, using TTL cache."""
+    cached = _cache_get("employee_rows")
+    if cached is not None:
+        return cached
+    ws = get_employees_sheet()
+    records = ws.get_all_records(numericise_ignore=["all"])
+    result = []
+    for row_number, rec in enumerate(records, start=2):
+        employee = {key: _strip_cell(value) for key, value in rec.items()}
+        employee["row_number"] = row_number
+        result.append(employee)
+    _cache_set("employee_rows", result, _CACHE_TTL_EMPLOYEES)
+    return result
 
 
 def get_employee_rows(
@@ -305,18 +352,16 @@ def get_employee_rows(
     require_expiry: bool = False,
 ):
     """Возвращает список словарей сотрудников из листа «Сотрудники»."""
-    ws = get_employees_sheet()
-    records = ws.get_all_records(numericise_ignore=["all"])
     employees = []
-    for row_number, rec in enumerate(records, start=2):
-        employee = {key: _strip_cell(value) for key, value in rec.items()}
+    for employee in _get_raw_employees():
         if require_expiry and not employee.get("Дата окончания"):
             continue
         if not include_without_chat and not employee.get("Chat ID"):
             continue
         if with_row_numbers:
-            employee["row_number"] = row_number
-        employees.append(employee)
+            employees.append(employee)
+        else:
+            employees.append({k: v for k, v in employee.items() if k != "row_number"})
     return employees
 
 
@@ -349,8 +394,11 @@ def search_employees(query: str, include_without_chat: bool = True):
     return matches
 
 
-def get_admin_rows(with_row_numbers: bool = True):
-    """Возвращает все записи листа «Админы» в нормализованном виде."""
+def _get_raw_admins() -> list[dict]:
+    """Fetches all admin rows with row_number from Sheets, using TTL cache."""
+    cached = _cache_get("admin_rows")
+    if cached is not None:
+        return cached
     ws = get_admins_sheet()
     records = ws.get_all_records(numericise_ignore=["all"])
     admins = []
@@ -358,10 +406,16 @@ def get_admin_rows(with_row_numbers: bool = True):
         admin = _normalize_admin_record(row_number, rec)
         if not admin:
             continue
-        if not with_row_numbers:
-            admin.pop("row_number", None)
         admins.append(admin)
+    _cache_set("admin_rows", admins, _CACHE_TTL_ADMINS)
     return admins
+
+
+def get_admin_rows(with_row_numbers: bool = True):
+    """Возвращает все записи листа «Админы» в нормализованном виде."""
+    if with_row_numbers:
+        return list(_get_raw_admins())
+    return [{k: v for k, v in admin.items() if k != "row_number"} for admin in _get_raw_admins()]
 
 
 def get_admin_record(chat_id: int) -> dict | None:
@@ -439,11 +493,13 @@ def _append_admin_row(
         ],
         value_input_option="USER_ENTERED",
     )
+    _cache_clear("admin_rows")
 
 
 def _update_admin_field(row_number: int, col: int, value: str):
     ws = get_admins_sheet()
     ws.update_cell(row_number, col, value)
+    _cache_clear("admin_rows")
 
 
 def create_or_update_admin_request(chat_id: int, fio: str, username: str, subdivision: str = "") -> str:
@@ -523,6 +579,9 @@ def revoke_admin_access(chat_id: int) -> dict | None:
 
 def get_sub_groups():
     """Словарь {название подразделения: ID группы Telegram}."""
+    cached = _cache_get("group_rows")
+    if cached is not None:
+        return cached
     ws = get_groups_sheet()
     records = ws.get_all_records()
     groups = {}
@@ -537,6 +596,7 @@ def get_sub_groups():
         ).strip()
         if name and str(group_id).strip().lstrip("-").isdigit():
             groups[name] = int(group_id)
+    _cache_set("group_rows", groups, _CACHE_TTL_GROUPS)
     return groups
 
 def set_row_red(row_number: int):
@@ -562,6 +622,7 @@ def get_employee_status(row_number: int) -> str:
 def set_employee_status(row_number: int, status: str):
     ws = get_employees_sheet()
     ws.update_cell(row_number, COL_STATUS, status.strip())
+    _cache_clear("employee_rows")
 
 
 def clear_employee_status(row_number: int):
@@ -571,11 +632,13 @@ def clear_employee_status(row_number: int):
 def update_employee_cell(row_number: int, col: int, value: str):
     ws = get_employees_sheet()
     ws.update_cell(row_number, col, value)
+    _cache_clear("employee_rows")
 
 
 def delete_employee_row(row_number: int):
     ws = get_employees_sheet()
     ws.delete_rows(row_number)
+    _cache_clear("employee_rows")
 
 
 def get_employee_row_dict(row_number: int) -> dict:
