@@ -607,8 +607,14 @@ def set_row_red(row_number: int):
     })
 
 
+def set_row_yellow(row_number: int):
+    ws = get_employees_sheet()
+    ws.format(f"{row_number}:{row_number}", {
+        "backgroundColor": {"red": 1, "green": 0.95, "blue": 0.4}
+    })
+
+
 def set_row_default(row_number: int):
-    """Возвращает строке нейтральный белый фон."""
     ws = get_employees_sheet()
     ws.format(f"{row_number}:{row_number}", {
         "backgroundColor": {"red": 1, "green": 1, "blue": 1}

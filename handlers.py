@@ -37,6 +37,7 @@ from google_sheets import (
     set_employee_status,
     set_row_default,
     set_row_red,
+    set_row_yellow,
     update_employee_cell,
 )
 from config import (
@@ -151,8 +152,7 @@ _EDIT_FIELD_BUTTONS = {
     "📱 Телефон": "phone",
     "💼 Должность": "position",
     "🏢 Подразделение": "subdivision",
-    "✅ Главная группа": "main_group",
-    "👥 Подгруппа": "sub_group",
+    "🟡 В процессе": "in_progress",
 }
 
 
@@ -162,7 +162,7 @@ def edit_field_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=keys[0]), KeyboardButton(text=keys[1])],
             [KeyboardButton(text=keys[2]), KeyboardButton(text=keys[3])],
-            [KeyboardButton(text=keys[4]), KeyboardButton(text=keys[5])],
+            [KeyboardButton(text=keys[4])],
             [KeyboardButton(text="❌ Отмена")],
         ],
         resize_keyboard=True,
@@ -546,6 +546,21 @@ async def action_edit_field(message: Message, state: FSMContext):
     if not field:
         await message.answer("Выберите поле из списка.", reply_markup=edit_field_keyboard())
         return
+    if field == "in_progress":
+        data = await state.get_data()
+        row_number = data["edit_row"]
+        fio = data.get("edit_fio", "")
+        set_row_yellow(row_number)
+        set_employee_status(row_number, "В процессе")
+        await state.clear()
+        kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+        await message.answer(
+            f"✅ Статус сотрудника {fio} обновлён: медкнижка в процессе.\n"
+            "Строка выделена жёлтым. Когда получат — обновите дату окончания.",
+            reply_markup=kb,
+        )
+        return
+
     await state.update_data(edit_field=field)
     await state.set_state(AdminActions.waiting_edit_value)
     if field == "expiry":
@@ -566,9 +581,6 @@ async def action_edit_field(message: Message, state: FSMContext):
             await message.answer("Выберите новое подразделение:", reply_markup=subdivision_keyboard(subdivisions))
         else:
             await message.answer("Введите название подразделения:", reply_markup=cancel_keyboard())
-    elif field in ("main_group", "sub_group"):
-        label = "в главной группе" if field == "main_group" else "в подгруппе"
-        await message.answer(f"Сотрудник состоит {label}?", reply_markup=yes_no_keyboard())
 
 
 @router.message(AdminActions.waiting_edit_value)
