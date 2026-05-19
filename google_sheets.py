@@ -569,6 +569,11 @@ def update_employee_cell(row_number: int, col: int, value: str):
     ws.update_cell(row_number, col, value)
 
 
+def delete_employee_row(row_number: int):
+    ws = get_employees_sheet()
+    ws.delete_rows(row_number)
+
+
 def get_employee_row_dict(row_number: int) -> dict:
     """Returns all employee fields using a single API call."""
     ws = get_employees_sheet()

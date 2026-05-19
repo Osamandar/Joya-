@@ -28,6 +28,7 @@ from google_sheets import (
     add_employee_row,
     clear_employee_status,
     complete_employee_registration,
+    delete_employee_row,
     get_notification_admin_ids,
     get_owner_admin_ids,
     has_admin_access,
@@ -144,6 +145,10 @@ class AdminActions(StatesGroup):
     waiting_broadcast_confirm = State()
     waiting_list_filter = State()
     waiting_expired_filter = State()
+    waiting_delete_filter = State()
+    waiting_delete_search = State()
+    waiting_delete_employee = State()
+    waiting_delete_confirm = State()
 
 
 # Кнопки полей редактирования → внутренний ключ
@@ -196,7 +201,8 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📊 Статус"), KeyboardButton(text="📋 Список на 7 дней")],
             [KeyboardButton(text="🚨 Просроченные"), KeyboardButton(text="🔍 Проверить")],
             [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="➕ Добавить")],
-            [KeyboardButton(text="▶️ Проверить сейчас"), KeyboardButton(text="❌ Закрыть меню")],
+            [KeyboardButton(text="🗑 Удалить"), KeyboardButton(text="▶️ Проверить сейчас")],
+            [KeyboardButton(text="❌ Закрыть меню")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -209,8 +215,8 @@ def get_owner_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📊 Статус"), KeyboardButton(text="📋 Список на 7 дней")],
             [KeyboardButton(text="🚨 Просроченные"), KeyboardButton(text="🔍 Проверить")],
             [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="➕ Добавить")],
-            [KeyboardButton(text="▶️ Проверить сейчас"), KeyboardButton(text="👥 Администраторы")],
-            [KeyboardButton(text="❌ Закрыть меню")],
+            [KeyboardButton(text="🗑 Удалить"), KeyboardButton(text="▶️ Проверить сейчас")],
+            [KeyboardButton(text="👥 Администраторы"), KeyboardButton(text="❌ Закрыть меню")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -487,7 +493,9 @@ async def action_edit_search(message: Message, state: FSMContext):
     await _show_employee_list(message, state, employees)
 
 
-async def _show_employee_list(message: Message, state: FSMContext, employees: list):
+async def _show_employee_list(message: Message, state: FSMContext, employees: list, next_state=None):
+    if next_state is None:
+        next_state = AdminActions.waiting_edit_employee
     if not employees:
         await message.answer("Сотрудники не найдены. Попробуйте другой запрос.", reply_markup=cancel_keyboard())
         return
@@ -507,7 +515,7 @@ async def _show_employee_list(message: Message, state: FSMContext, employees: li
     kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
     note = f" (показаны первые {MAX}, уточните поиск)" if len(employees) > MAX else ""
     await state.update_data(emp_map=emp_map)
-    await state.set_state(AdminActions.waiting_edit_employee)
+    await state.set_state(next_state)
     await message.answer(f"Найдено: {len(employees)}{note}\n\nВыберите сотрудника:", reply_markup=kb)
 
 
@@ -593,6 +601,98 @@ async def action_edit_value(message: Message, state: FSMContext):
     await state.clear()
     kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
     await message.answer("Возвращаю в меню:", reply_markup=kb)
+
+
+@router.message(F.text == "🗑 Удалить")
+async def btn_start_delete(message: Message, state: FSMContext):
+    if not is_admin_user(message.from_user.id):
+        await message.answer("У вас нет прав для этой команды.")
+        return
+    subdivisions = get_subdivision_names()
+    pairs = [subdivisions[i:i+2] for i in range(0, len(subdivisions), 2)]
+    rows = [[KeyboardButton(text=f"🏢 {n}") for n in pair] for pair in pairs]
+    rows.append([KeyboardButton(text="👥 Все сотрудники"), KeyboardButton(text="🔍 Поиск по имени")])
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+    await state.set_state(AdminActions.waiting_delete_filter)
+    await message.answer("Найдите сотрудника для удаления:", reply_markup=kb)
+
+
+@router.message(AdminActions.waiting_delete_filter)
+async def action_delete_filter(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "🔍 Поиск по имени":
+        await state.set_state(AdminActions.waiting_delete_search)
+        await message.answer("Введите ФИО или телефон:", reply_markup=cancel_keyboard())
+        return
+    if text == "👥 Все сотрудники":
+        employees = get_employee_rows(include_without_chat=True, with_row_numbers=True)
+    elif text.startswith("🏢 "):
+        subdivision = text.removeprefix("🏢 ")
+        employees = [
+            e for e in get_employee_rows(include_without_chat=True, with_row_numbers=True)
+            if (e.get("Подразделение") or "").strip() == subdivision
+        ]
+    else:
+        await message.answer("Выберите вариант из списка.")
+        return
+    await _show_employee_list(message, state, employees, next_state=AdminActions.waiting_delete_employee)
+
+
+@router.message(AdminActions.waiting_delete_search)
+async def action_delete_search(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    employees = search_employees(text.lower(), include_without_chat=True)
+    await _show_employee_list(message, state, employees, next_state=AdminActions.waiting_delete_employee)
+
+
+@router.message(AdminActions.waiting_delete_employee)
+async def action_delete_employee(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    data = await state.get_data()
+    emp_map: dict = data.get("emp_map", {})
+    if text not in emp_map:
+        await message.answer("Выберите сотрудника из списка.")
+        return
+    row_number = emp_map[text]
+    emp = get_employee_row_dict(row_number)
+    await state.update_data(delete_row=row_number)
+    await state.set_state(AdminActions.waiting_delete_confirm)
+    await message.answer(
+        f"Удалить сотрудника?\n\n{employee_card(emp)}\n\n"
+        "⚠️ Строка будет удалена из таблицы навсегда.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="✅ Да, удалить")],
+                [KeyboardButton(text="❌ Отмена")],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        ),
+    )
+
+
+@router.message(AdminActions.waiting_delete_confirm)
+async def action_delete_confirm(message: Message, state: FSMContext):
+    if (message.text or "").strip() != "✅ Да, удалить":
+        await message.answer(
+            "Нажмите «✅ Да, удалить» для подтверждения или «❌ Отмена».",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="✅ Да, удалить")],
+                    [KeyboardButton(text="❌ Отмена")],
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            ),
+        )
+        return
+    data = await state.get_data()
+    row_number = data["delete_row"]
+    delete_employee_row(row_number)
+    await state.clear()
+    kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+    await message.answer("Сотрудник удалён из таблицы.", reply_markup=kb)
 
 
 @router.message(F.text == "👥 Администраторы")
