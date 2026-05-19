@@ -57,7 +57,6 @@ from config import (
 router = Router()
 
 CONSENT_YES = "✅ Согласен на обработку ПДн"
-CONSENT_NO = "❌ Не согласен"
 
 
 class Registration(StatesGroup):
@@ -135,8 +134,6 @@ class AdminActions(StatesGroup):
     waiting_find_action = State()
     waiting_edit_field = State()
     waiting_edit_value = State()
-    waiting_approve = State()
-    waiting_revoke = State()
     waiting_add_fio = State()
     waiting_add_phone = State()
     waiting_add_position = State()
@@ -635,88 +632,6 @@ async def action_delete_confirm(message: Message, state: FSMContext):
 async def btn_admins(message: Message):
     await cmd_admins(message)
 
-
-@router.message(F.text == "✔️ Одобрить")
-async def btn_start_approve(message: Message, state: FSMContext):
-    if not is_owner_user(message.from_user.id):
-        await message.answer("Только владелец может выдавать доступ.")
-        return
-    await state.set_state(AdminActions.waiting_approve)
-    await message.answer("Введите Chat ID и опционально роль (admin/owner), например:\n123456789 owner", reply_markup=ReplyKeyboardRemove())
-
-
-@router.message(AdminActions.waiting_approve)
-async def action_approve(message: Message, state: FSMContext):
-    raw = (message.text or "").strip()
-    parts = raw.split()
-    if len(parts) not in {1, 2}:
-        await message.answer("Нужно: ChatID [role]. Пример: 123456789 owner")
-        return
-    chat_id_raw = parts[0].strip()
-    if not chat_id_raw.lstrip("-").isdigit():
-        await message.answer("Chat ID должен быть числом.")
-        return
-    role = ADMIN_ROLE_ADMIN
-    if len(parts) == 2:
-        role = resolve_admin_role(parts[1]) or ""
-        if not role:
-            await message.answer("Роль должна быть admin или owner.")
-            return
-    target_chat_id = int(chat_id_raw)
-    admin = approve_admin_access(chat_id=target_chat_id, granted_by=actor_identity(message), role=role)
-    await set_user_commands(message.bot, target_chat_id, admin["role"])
-    await message.answer(f"Доступ выдан.\n\n{admin_card(admin)}")
-    try:
-        kb = get_owner_keyboard() if admin["role"] == ADMIN_ROLE_OWNER else get_admin_keyboard()
-        await message.bot.send_message(
-            target_chat_id,
-            "Вам выдан админ-доступ в боте.\n"
-            f"Роль: {admin_role_label(admin['role'])}\n"
-            "Нажмите / чтобы увидеть доступные команды.",
-            reply_markup=kb,
-        )
-    except Exception:
-        pass
-    await state.clear()
-    await message.answer("Возвращаю в меню.", reply_markup=get_owner_keyboard())
-
-
-@router.message(F.text == "🚫 Отозвать")
-async def btn_start_revoke(message: Message, state: FSMContext):
-    if not is_owner_user(message.from_user.id):
-        await message.answer("Только владелец может отзывать админ-доступ.")
-        return
-    await state.set_state(AdminActions.waiting_revoke)
-    await message.answer("Введите Chat ID администратора для отзыва:", reply_markup=ReplyKeyboardRemove())
-
-
-@router.message(AdminActions.waiting_revoke)
-async def action_revoke(message: Message, state: FSMContext):
-    chat_id_raw = (message.text or "").strip()
-    if not chat_id_raw.lstrip("-").isdigit():
-        await message.answer("Chat ID должен быть числом.")
-        return
-    target_chat_id = int(chat_id_raw)
-    if DEVELOPER_CHAT_ID and target_chat_id == DEVELOPER_CHAT_ID:
-        await message.answer("Основного владельца из .env отключить этой командой нельзя.")
-        return
-    admin = revoke_admin_access(target_chat_id)
-    if not admin:
-        await message.answer("Админ с таким Chat ID не найден.")
-        await state.clear()
-        await message.answer("Возвращаю в меню.", reply_markup=get_owner_keyboard())
-        return
-    await set_user_commands(message.bot, target_chat_id, "default")
-    await message.answer(f"Доступ отключен.\n\n{admin_card(admin)}")
-    try:
-        await message.bot.send_message(target_chat_id, "Ваш админ-доступ в боте отключён.")
-    except Exception:
-        pass
-    await state.clear()
-    await message.answer("Возвращаю в меню.", reply_markup=get_owner_keyboard())
-
-
-# --- end admin panel additions ---
 
 def normalize_phone_input(phone_raw: str) -> str | None:
     phone_clean = re.sub(r"[^\d+]", "", phone_raw.strip())
