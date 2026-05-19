@@ -836,6 +836,9 @@ def _apply_employee_edit(row_number: int, field: str, new_value: str) -> str | N
         update_employee_cell(row_number, COL_PHONE, normalized_phone)
     elif field == "position":
         update_employee_cell(row_number, COL_POSITION, new_value)
+        auto_sub = resolve_subdivision(new_value)
+        if auto_sub:
+            update_employee_cell(row_number, COL_SUBDIVISION, auto_sub)
     elif field == "subdivision":
         subdivisions = get_subdivision_names()
         normalized_sub = "" if new_value in {"-", "пусто", "none"} else new_value
