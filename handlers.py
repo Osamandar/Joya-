@@ -456,7 +456,7 @@ async def action_find_search(message: Message, state: FSMContext):
 
 async def _show_employee_list(message: Message, state: FSMContext, employees: list, next_state=None):
     if next_state is None:
-        next_state = AdminActions.waiting_edit_employee
+        next_state = AdminActions.waiting_find_employee
     if not employees:
         await message.answer("Сотрудники не найдены. Попробуйте другой запрос.", reply_markup=cancel_keyboard())
         return
