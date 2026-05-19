@@ -210,7 +210,7 @@ def get_owner_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="🚨 Просроченные"), KeyboardButton(text="🔍 Проверить")],
             [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="➕ Добавить")],
             [KeyboardButton(text="▶️ Проверить сейчас"), KeyboardButton(text="👥 Администраторы")],
-            [KeyboardButton(text="🚫 Отозвать"), KeyboardButton(text="❌ Закрыть меню")],
+            [KeyboardButton(text="❌ Закрыть меню")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
