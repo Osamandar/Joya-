@@ -141,6 +141,9 @@ class AdminActions(StatesGroup):
     waiting_add_position = State()
     waiting_add_expiry = State()
     waiting_broadcast = State()
+    waiting_broadcast_confirm = State()
+    waiting_list_filter = State()
+    waiting_expired_filter = State()
 
 
 # Кнопки полей редактирования → внутренний ключ
@@ -214,6 +217,80 @@ def get_owner_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+async def send_paginated(message: Message, text: str, max_len: int = 4000):
+    """Splits long text into multiple messages to stay under Telegram's 4096 char limit."""
+    lines = text.split("\n")
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) + 1 > max_len:
+            await message.answer(chunk)
+            chunk = line
+        else:
+            chunk = chunk + "\n" + line if chunk else line
+    if chunk:
+        await message.answer(chunk)
+
+
+async def _show_subdivision_filter(message: Message, state: FSMContext, next_state):
+    subdivisions = get_subdivision_names()
+    pairs = [subdivisions[i:i+2] for i in range(0, len(subdivisions), 2)]
+    rows = [[KeyboardButton(text=f"🏢 {n}") for n in pair] for pair in pairs]
+    rows.append([KeyboardButton(text="👥 Все сотрудники")])
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+    await state.set_state(next_state)
+    await message.answer("Выберите подразделение или покажите всех:", reply_markup=kb)
+
+
+async def _show_list_result(message: Message, subdivision: str | None, days: int = 7):
+    from datetime import timedelta
+    today = datetime.now().date()
+    cutoff = today + timedelta(days=days)
+    employees = get_all_employees()
+    expiring = []
+    for e in employees:
+        try:
+            expiry = datetime.strptime(e["Дата окончания"], "%Y-%m-%d").date()
+            if today <= expiry <= cutoff:
+                if subdivision is None or (e.get("Подразделение") or "").strip() == subdivision:
+                    expiring.append(e)
+        except Exception:
+            continue
+    sub_label = f" ({subdivision})" if subdivision else ""
+    if not expiring:
+        await message.answer(f"Нет сотрудников с окончанием в течение {days} дн.{sub_label}")
+        return
+    lines = [
+        f"{e['ФИО']} ({e.get('Должность') or '—'}, {e.get('Подразделение') or '—'}) — {fmt_date(e['Дата окончания'])}"
+        for e in expiring
+    ]
+    await send_paginated(message, f"Истекает в течение {days} дн.{sub_label} ({len(expiring)}):\n\n" + "\n".join(lines))
+
+
+async def _show_expired_result(message: Message, subdivision: str | None):
+    today = datetime.now().date()
+    employees = get_all_employees()
+    expired = []
+    for e in employees:
+        try:
+            expiry = datetime.strptime(e["Дата окончания"], "%Y-%m-%d").date()
+            if expiry < today:
+                if subdivision is None or (e.get("Подразделение") or "").strip() == subdivision:
+                    expired.append(((today - expiry).days, e))
+        except Exception:
+            continue
+    sub_label = f" ({subdivision})" if subdivision else ""
+    if not expired:
+        await message.answer(f"Просроченных медкнижек нет{sub_label}.")
+        return
+    expired.sort(key=lambda x: -x[0])
+    lines = [
+        f"{e['ФИО']} ({e.get('Должность') or '—'}) — {fmt_date(e['Дата окончания'])} (просрочена на {d} дн.)"
+        for d, e in expired
+    ]
+    await send_paginated(message, f"Просроченные{sub_label} ({len(expired)}):\n\n" + "\n".join(lines))
+
+
 @router.message(StateFilter("*"), F.text.in_({"❌ Отмена", "/cancel"}))
 async def universal_cancel(message: Message, state: FSMContext):
     current = await state.get_state()
@@ -251,40 +328,51 @@ async def btn_status(message: Message):
 
 
 @router.message(F.text == "📋 Список на 7 дней")
-async def btn_list_7(message: Message):
+async def btn_list_7(message: Message, state: FSMContext):
     if not is_admin_user(message.from_user.id):
         await message.answer("У вас нет прав.")
         return
+    await _show_subdivision_filter(message, state, AdminActions.waiting_list_filter)
 
-    from datetime import timedelta
 
-    days = 7
-    today = datetime.now().date()
-    cutoff_date = today + timedelta(days=days)
-    employees = get_all_employees()
-    expiring = []
-    for e in employees:
-        try:
-            expiry = datetime.strptime(e.get("Дата окончания", ""), "%Y-%m-%d").date()
-            if today <= expiry <= cutoff_date:
-                expiring.append(e)
-        except Exception:
-            continue
-    if not expiring:
-        await message.answer(f"Нет сотрудников с окончанием в течение {days} дн.")
+@router.message(AdminActions.waiting_list_filter)
+async def action_list_filter(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "👥 Все сотрудники":
+        subdivision = None
+    elif text.startswith("🏢 "):
+        subdivision = text.removeprefix("🏢 ")
     else:
-        reply = "\n".join(
-            [
-                f"{e['ФИО']} ({e.get('Должность') or '—'}, {e.get('Подразделение') or '—'}) - {fmt_date(e['Дата окончания'])}"
-                for e in expiring
-            ]
-        )
-        await message.answer(reply)
+        await message.answer("Выберите вариант из списка.")
+        return
+    await state.clear()
+    await _show_list_result(message, subdivision)
+    kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+    await message.answer("Выберите действие:", reply_markup=kb)
 
 
 @router.message(F.text == "🚨 Просроченные")
-async def btn_expired(message: Message):
-    await cmd_expired(message)
+async def btn_expired(message: Message, state: FSMContext):
+    if not is_admin_user(message.from_user.id):
+        await message.answer("У вас нет прав.")
+        return
+    await _show_subdivision_filter(message, state, AdminActions.waiting_expired_filter)
+
+
+@router.message(AdminActions.waiting_expired_filter)
+async def action_expired_filter(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "👥 Все сотрудники":
+        subdivision = None
+    elif text.startswith("🏢 "):
+        subdivision = text.removeprefix("🏢 ")
+    else:
+        await message.answer("Выберите вариант из списка.")
+        return
+    await state.clear()
+    await _show_expired_result(message, subdivision)
+    kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+    await message.answer("Выберите действие:", reply_markup=kb)
 
 
 @router.message(F.text == "➕ Добавить")
@@ -1197,35 +1285,11 @@ async def cmd_list(message: Message):
     if not is_admin_user(message.from_user.id):
         await message.answer("У вас нет прав.")
         return
-
     args = message.text.split()
     days = 7
     if len(args) > 1 and args[1].isdigit():
         days = int(args[1])
-
-    from datetime import timedelta
-
-    today = datetime.now().date()
-    cutoff_date = today + timedelta(days=days)
-    employees = get_all_employees()
-    expiring = []
-    for e in employees:
-        try:
-            expiry = datetime.strptime(e["Дата окончания"], "%Y-%m-%d").date()
-            if today <= expiry <= cutoff_date:
-                expiring.append(e)
-        except Exception:
-            continue
-    if not expiring:
-        await message.answer(f"Нет сотрудников с окончанием в течение {days} дн.")
-    else:
-        reply = "\n".join(
-            [
-                f"{e['ФИО']} ({e['Должность']}, {e.get('Подразделение') or '—'}) - {fmt_date(e['Дата окончания'])}"
-                for e in expiring
-            ]
-        )
-        await message.answer(reply)
+    await _show_list_result(message, subdivision=None, days=days)
 
 
 @router.message(F.text == "/status")
@@ -1313,25 +1377,7 @@ async def cmd_expired(message: Message):
     if not is_admin_user(message.from_user.id):
         await message.answer("У вас нет прав.")
         return
-    today = datetime.now().date()
-    employees = get_all_employees()
-    expired = []
-    for e in employees:
-        try:
-            expiry = datetime.strptime(e["Дата окончания"], "%Y-%m-%d").date()
-            if expiry < today:
-                expired.append((today - expiry).days, e)
-        except Exception:
-            continue
-    if not expired:
-        await message.answer("Просроченных медкнижек нет.")
-        return
-    expired.sort(key=lambda x: -x[0])
-    lines = [
-        f"{e['ФИО']} ({e.get('Должность') or '—'}) — {fmt_date(e['Дата окончания'])} (просрочена на {d} дн.)"
-        for d, e in expired
-    ]
-    await message.answer(f"Просроченные медкнижки ({len(expired)}):\n\n" + "\n".join(lines))
+    await _show_expired_result(message, subdivision=None)
 
 
 @router.message(F.text == "/run_check")
@@ -1455,6 +1501,44 @@ async def action_broadcast(message: Message, state: FSMContext):
     if not text:
         await message.answer("Текст не может быть пустым.")
         return
+    employees = get_employee_rows(include_without_chat=False)
+    count = sum(
+        1 for e in employees
+        if (e.get("Chat ID") or "").strip().lstrip("-").isdigit()
+    )
+    await state.update_data(broadcast_text=text)
+    await state.set_state(AdminActions.waiting_broadcast_confirm)
+    await message.answer(
+        f"Текст рассылки:\n\n{text}\n\n"
+        f"Получателей: {count} сотрудников.\n\nОтправить?",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="✅ Отправить")],
+                [KeyboardButton(text="❌ Отмена")],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        ),
+    )
+
+
+@router.message(AdminActions.waiting_broadcast_confirm)
+async def action_broadcast_confirm(message: Message, state: FSMContext):
+    if (message.text or "").strip() != "✅ Отправить":
+        await message.answer(
+            "Нажмите «✅ Отправить» для подтверждения или «❌ Отмена» для отмены.",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="✅ Отправить")],
+                    [KeyboardButton(text="❌ Отмена")],
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            ),
+        )
+        return
+    data = await state.get_data()
+    text = data["broadcast_text"]
     employees = get_employee_rows(include_without_chat=False)
     sent = 0
     failed = 0
