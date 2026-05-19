@@ -242,6 +242,17 @@ async def _show_subdivision_filter(message: Message, state: FSMContext, next_sta
     await message.answer("Выберите подразделение или покажите всех:", reply_markup=kb)
 
 
+def _group_by_position(employees: list) -> list[tuple[str, list]]:
+    """Groups employees by position in POSITIONS order. Unknown positions go last."""
+    pos_order = {pos: i for i, pos in enumerate(POSITIONS)}
+    groups: dict[str, list] = {}
+    for e in employees:
+        pos = (e.get("Должность") or "").strip() or "Другое"
+        groups.setdefault(pos, []).append(e)
+    sorted_keys = sorted(groups.keys(), key=lambda p: pos_order.get(p, len(POSITIONS)))
+    return [(pos, groups[pos]) for pos in sorted_keys]
+
+
 async def _show_list_result(message: Message, subdivision: str | None, days: int = 7):
     from datetime import timedelta
     today = datetime.now().date()
@@ -260,35 +271,37 @@ async def _show_list_result(message: Message, subdivision: str | None, days: int
     if not expiring:
         await message.answer(f"Нет сотрудников с окончанием в течение {days} дн.{sub_label}")
         return
-    lines = [
-        f"{e['ФИО']} ({e.get('Должность') or '—'}, {e.get('Подразделение') or '—'}) — {fmt_date(e['Дата окончания'])}"
-        for e in expiring
-    ]
-    await send_paginated(message, f"Истекает в течение {days} дн.{sub_label} ({len(expiring)}):\n\n" + "\n".join(lines))
+    lines = [f"Истекает в течение {days} дн.{sub_label} ({len(expiring)}):"]
+    for pos, emps in _group_by_position(expiring):
+        lines.append(f"\n{pos}:")
+        for e in emps:
+            lines.append(f"  {e['ФИО']} — {fmt_date(e['Дата окончания'])}")
+    await send_paginated(message, "\n".join(lines))
 
 
 async def _show_expired_result(message: Message, subdivision: str | None):
     today = datetime.now().date()
     employees = get_all_employees()
-    expired = []
+    expired_raw = []
     for e in employees:
         try:
             expiry = datetime.strptime(e["Дата окончания"], "%Y-%m-%d").date()
             if expiry < today:
                 if subdivision is None or (e.get("Подразделение") or "").strip() == subdivision:
-                    expired.append(((today - expiry).days, e))
+                    expired_raw.append(e)
         except Exception:
             continue
     sub_label = f" ({subdivision})" if subdivision else ""
-    if not expired:
+    if not expired_raw:
         await message.answer(f"Просроченных медкнижек нет{sub_label}.")
         return
-    expired.sort(key=lambda x: -x[0])
-    lines = [
-        f"{e['ФИО']} ({e.get('Должность') or '—'}) — {fmt_date(e['Дата окончания'])} (просрочена на {d} дн.)"
-        for d, e in expired
-    ]
-    await send_paginated(message, f"Просроченные{sub_label} ({len(expired)}):\n\n" + "\n".join(lines))
+    lines = [f"Просроченные{sub_label} ({len(expired_raw)}):"]
+    for pos, emps in _group_by_position(expired_raw):
+        lines.append(f"\n{pos}:")
+        for e in emps:
+            delta = (today - datetime.strptime(e["Дата окончания"], "%Y-%m-%d").date()).days
+            lines.append(f"  {e['ФИО']} — {fmt_date(e['Дата окончания'])} ({delta} дн.)")
+    await send_paginated(message, "\n".join(lines))
 
 
 @router.message(StateFilter("*"), F.text.in_({"❌ Отмена", "/cancel"}))
@@ -1302,11 +1315,12 @@ async def cmd_status(message: Message):
     total = len(employees)
     no_chat = 0
     no_expiry = 0
-    expired = []
-    today = []
+    expired_emps = []
+    today_emps = []
     soon_1_3 = []
     soon_4_7 = []
 
+    now_date = datetime.now().date()
     for employee in employees:
         if not (employee.get("Chat ID") or "").strip():
             no_chat += 1
@@ -1321,34 +1335,37 @@ async def cmd_status(message: Message):
         except ValueError:
             continue
 
-        delta = (expiry - datetime.now().date()).days
-        line = f"{employee['ФИО']} - {fmt_date(expiry_str)}"
+        delta = (expiry - now_date).days
         if delta < 0:
-            expired.append(line)
+            expired_emps.append(employee)
         elif delta == 0:
-            today.append(line)
+            today_emps.append(employee)
         elif delta <= 3:
-            soon_1_3.append(line)
+            soon_1_3.append(employee)
         elif delta <= 7:
-            soon_4_7.append(line)
+            soon_4_7.append(employee)
 
     parts = [
         "Сводка по таблице:",
         f"Всего сотрудников: {total}",
         f"Без Chat ID: {no_chat}",
         f"Без даты окончания: {no_expiry}",
-        f"Просрочено: {len(expired)}",
-        f"Истекает сегодня: {len(today)}",
+        f"Просрочено: {len(expired_emps)}",
+        f"Истекает сегодня: {len(today_emps)}",
         f"Истекает через 1-3 дня: {len(soon_1_3)}",
         f"Истекает через 4-7 дней: {len(soon_4_7)}",
     ]
 
-    if expired:
-        parts.append("\nПросрочено:\n" + "\n".join(expired[:10]))
-    if today:
-        parts.append("\nСегодня:\n" + "\n".join(today[:10]))
+    for label, emps in [("Просрочено", expired_emps), ("Сегодня", today_emps)]:
+        if not emps:
+            continue
+        parts.append(f"\n{label}:")
+        for pos, group in _group_by_position(emps):
+            parts.append(f"  {pos}:")
+            for e in group:
+                parts.append(f"    {e['ФИО']} — {fmt_date(e['Дата окончания'])}")
 
-    await message.answer("\n".join(parts))
+    await send_paginated(message, "\n".join(parts))
 
 
 @router.message(F.text == "/mycard")
