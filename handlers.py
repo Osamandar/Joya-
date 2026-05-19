@@ -164,11 +164,29 @@ def edit_field_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=keys[0]), KeyboardButton(text=keys[1])],
             [KeyboardButton(text=keys[2]), KeyboardButton(text=keys[3])],
             [KeyboardButton(text=keys[4])],
-            [KeyboardButton(text="❌ Отмена")],
+            [KeyboardButton(text="◀️ Назад"), KeyboardButton(text="❌ Отмена")],
         ],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
+
+
+def _action_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="🗑 Удалить")],
+            [KeyboardButton(text="◀️ Назад"), KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+async def _show_employee_card(message: Message, state: FSMContext, row_number: int, found_fio: str):
+    emp = get_employee_row_dict(row_number)
+    await state.update_data(found_row=row_number, found_fio=found_fio)
+    await state.set_state(AdminActions.waiting_find_action)
+    await message.answer(employee_card(emp), reply_markup=_action_keyboard())
 
 
 def yes_no_keyboard() -> ReplyKeyboardMarkup:
@@ -487,20 +505,7 @@ async def action_find_employee(message: Message, state: FSMContext):
         await message.answer("Выберите сотрудника из списка.")
         return
     row_number = emp_map[text]
-    emp = get_employee_row_dict(row_number)
-    await state.update_data(found_row=row_number, found_fio=text)
-    await state.set_state(AdminActions.waiting_find_action)
-    await message.answer(
-        employee_card(emp),
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="🗑 Удалить")],
-                [KeyboardButton(text="◀️ Назад"), KeyboardButton(text="❌ Отмена")],
-            ],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        ),
-    )
+    await _show_employee_card(message, state, row_number, text)
 
 
 @router.message(AdminActions.waiting_find_action)
@@ -542,6 +547,10 @@ async def action_edit_field(message: Message, state: FSMContext):
         await state.clear()
         kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
         await message.answer("Отменено.", reply_markup=kb)
+        return
+    if text == "◀️ Назад":
+        data = await state.get_data()
+        await _show_employee_card(message, state, data["edit_row"], data.get("edit_fio", ""))
         return
     field = _EDIT_FIELD_BUTTONS.get(text)
     if not field:
@@ -607,10 +616,8 @@ async def action_edit_value(message: Message, state: FSMContext):
         else:
             await message.answer(error, reply_markup=cancel_keyboard())
         return
-    await message.answer("Данные обновлены:\n\n" + employee_card(get_employee_row_dict(row_number)))
-    await state.clear()
-    kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
-    await message.answer("Возвращаю в меню:", reply_markup=kb)
+    await message.answer("✅ Данные обновлены.")
+    await _show_employee_card(message, state, row_number, data.get("edit_fio", ""))
 
 
 @router.message(StateFilter(None), F.text == "🗑 Удалить")
@@ -755,23 +762,24 @@ def admin_card(admin: dict) -> str:
 def employee_status_text(employee: dict) -> str:
     expiry_str = (employee.get("Дата окончания") or "").strip()
     status_marker = (employee.get("Статус уведомлений") or "").strip().lower()
+    if status_marker == "в процессе":
+        return "🟡 В процессе"
     if not expiry_str:
-        return "дата не указана"
+        return "❓ Дата не указана"
     try:
         expiry = datetime.strptime(expiry_str, "%Y-%m-%d").date()
     except ValueError:
-        return f"некорректная дата: {expiry_str}"
-
+        return f"❓ Некорректная дата: {expiry_str}"
     delta = (expiry - datetime.now().date()).days
-    if status_marker == "expired" or delta < 0:
-        if delta < 0:
-            return f"просрочена на {abs(delta)} дн."
-        return "истекает сегодня"
+    if delta < 0:
+        return f"🔴 Просрочена на {abs(delta)} дн."
     if delta == 0:
-        return "истекает сегодня"
+        return "🔴 Истекает сегодня"
     if delta == 1:
-        return "истекает завтра"
-    return f"истекает через {delta} дн."
+        return "🟠 Истекает завтра"
+    if delta <= 7:
+        return f"🟠 Истекает через {delta} дн."
+    return f"✅ Активна (до {fmt_date(expiry_str)})"
 
 
 def employee_card(employee: dict) -> str:
@@ -784,18 +792,16 @@ def employee_card(employee: dict) -> str:
     in_main = employee.get("В главной группе") or "—"
     in_sub = employee.get("В группе подразделения") or "—"
     status = employee_status_text(employee)
-    service_status = employee.get("Статус уведомлений") or "—"
     return (
-        f"{fio}\n"
-        f"Телефон: {phone}\n"
-        f"Должность: {position}\n"
-        f"Подразделение: {sub}\n"
-        f"Дата окончания: {expiry}\n"
+        f"👤 {fio}\n"
+        f"📱 Телефон: {phone}\n"
+        f"💼 Должность: {position}\n"
+        f"🏢 Подразделение: {sub}\n"
+        f"📅 Дата окончания: {expiry}\n"
         f"Статус: {status}\n"
         f"Chat ID: {chat_id}\n"
         f"В главной группе: {in_main}\n"
-        f"В группе подразделения: {in_sub}\n"
-        f"Служебный статус: {service_status}"
+        f"В группе подразделения: {in_sub}"
     )
 
 
