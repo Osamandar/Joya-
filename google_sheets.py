@@ -405,7 +405,11 @@ def get_notification_admin_ids():
     ids = []
     if DEVELOPER_CHAT_ID:
         ids.append(DEVELOPER_CHAT_ID)
-    ids.extend(get_admins())
+    ids.extend(
+        admin["chat_id"]
+        for admin in get_admin_rows(with_row_numbers=False)
+        if admin["state"] == "active" and admin["role"] == ADMIN_ROLE_ADMIN
+    )
     return list(dict.fromkeys(ids))
 
 
