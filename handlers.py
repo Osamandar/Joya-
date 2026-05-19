@@ -413,12 +413,12 @@ async def _start_find_flow(message: Message, state: FSMContext):
     await message.answer("Выберите подразделение или способ поиска:", reply_markup=kb)
 
 
-@router.message(F.text == "🔍 Проверить")
+@router.message(StateFilter(None), F.text == "🔍 Проверить")
 async def btn_start_check(message: Message, state: FSMContext):
     await _start_find_flow(message, state)
 
 
-@router.message(F.text == "✏️ Редактировать")
+@router.message(StateFilter(None), F.text == "✏️ Редактировать")
 async def btn_start_edit(message: Message, state: FSMContext):
     await _start_find_flow(message, state)
 
@@ -612,7 +612,7 @@ async def action_edit_value(message: Message, state: FSMContext):
     await message.answer("Возвращаю в меню:", reply_markup=kb)
 
 
-@router.message(F.text == "🗑 Удалить")
+@router.message(StateFilter(None), F.text == "🗑 Удалить")
 async def btn_start_delete(message: Message, state: FSMContext):
     await _start_find_flow(message, state)
 
