@@ -3,8 +3,10 @@ from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefaul
 
 COMMANDS_DEFAULT = [
     BotCommand(command="start", description="Регистрация / Главное меню"),
+    BotCommand(command="mycard", description="Моя карточка медкнижки"),
     BotCommand(command="whoami", description="Мой профиль и Chat ID"),
     BotCommand(command="request_admin", description="Запросить доступ администратора"),
+    BotCommand(command="cancel", description="Отменить текущее действие"),
 ]
 
 COMMANDS_ADMIN = [
@@ -12,8 +14,14 @@ COMMANDS_ADMIN = [
     BotCommand(command="admin_panel", description="Панель администратора"),
     BotCommand(command="status", description="Сводка по медкнижкам"),
     BotCommand(command="list", description="Список истекающих медкнижек"),
+    BotCommand(command="expired", description="Список просроченных"),
     BotCommand(command="check", description="Найти сотрудника"),
+    BotCommand(command="add", description="Добавить сотрудника"),
+    BotCommand(command="broadcast", description="Рассылка сотрудникам"),
+    BotCommand(command="run_check", description="Запустить проверку вручную"),
+    BotCommand(command="mycard", description="Моя карточка"),
     BotCommand(command="whoami", description="Мой профиль"),
+    BotCommand(command="cancel", description="Отменить действие"),
 ]
 
 COMMANDS_OWNER = [
@@ -21,11 +29,17 @@ COMMANDS_OWNER = [
     BotCommand(command="admin_panel", description="Панель администратора"),
     BotCommand(command="status", description="Сводка по медкнижкам"),
     BotCommand(command="list", description="Список истекающих медкнижек"),
+    BotCommand(command="expired", description="Список просроченных"),
     BotCommand(command="check", description="Найти сотрудника"),
+    BotCommand(command="add", description="Добавить сотрудника"),
+    BotCommand(command="broadcast", description="Рассылка сотрудникам"),
+    BotCommand(command="run_check", description="Запустить проверку вручную"),
     BotCommand(command="admins", description="Список администраторов"),
     BotCommand(command="approve_admin", description="Выдать доступ администратора"),
     BotCommand(command="revoke_admin", description="Отозвать доступ"),
+    BotCommand(command="mycard", description="Моя карточка"),
     BotCommand(command="whoami", description="Мой профиль"),
+    BotCommand(command="cancel", description="Отменить действие"),
 ]
 
 

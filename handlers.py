@@ -4,6 +4,7 @@ from aiogram import Router, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import StateFilter
 import re
 
 from commands import set_user_commands
@@ -135,6 +136,11 @@ class AdminActions(StatesGroup):
     waiting_edit_value = State()
     waiting_approve = State()
     waiting_revoke = State()
+    waiting_add_fio = State()
+    waiting_add_phone = State()
+    waiting_add_position = State()
+    waiting_add_expiry = State()
+    waiting_broadcast = State()
 
 
 # Кнопки полей редактирования → внутренний ключ
@@ -185,7 +191,9 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📊 Статус"), KeyboardButton(text="📋 Список на 7 дней")],
-            [KeyboardButton(text="🔍 Проверить"), KeyboardButton(text="✏️ Редактировать")],
+            [KeyboardButton(text="🚨 Просроченные"), KeyboardButton(text="🔍 Проверить")],
+            [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="➕ Добавить")],
+            [KeyboardButton(text="📢 Рассылка"), KeyboardButton(text="▶️ Проверить сейчас")],
             [KeyboardButton(text="❌ Закрыть меню")],
         ],
         resize_keyboard=True,
@@ -194,12 +202,32 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
 
 
 def get_owner_keyboard() -> ReplyKeyboardMarkup:
-    kb = get_admin_keyboard()
-    kb.keyboard.insert(
-        2, [KeyboardButton(text="👥 Администраторы"), KeyboardButton(text="✔️ Одобрить")]
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📊 Статус"), KeyboardButton(text="📋 Список на 7 дней")],
+            [KeyboardButton(text="🚨 Просроченные"), KeyboardButton(text="🔍 Проверить")],
+            [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="➕ Добавить")],
+            [KeyboardButton(text="📢 Рассылка"), KeyboardButton(text="▶️ Проверить сейчас")],
+            [KeyboardButton(text="👥 Администраторы"), KeyboardButton(text="✔️ Одобрить")],
+            [KeyboardButton(text="🚫 Отозвать"), KeyboardButton(text="❌ Закрыть меню")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
     )
-    kb.keyboard.insert(3, [KeyboardButton(text="🚫 Отозвать"), KeyboardButton(text="❌ Закрыть меню")])
-    return kb
+
+
+@router.message(StateFilter("*"), F.text.in_({"❌ Отмена", "/cancel"}))
+async def universal_cancel(message: Message, state: FSMContext):
+    current = await state.get_state()
+    await state.clear()
+    if current is None:
+        await message.answer("Нечего отменять.", reply_markup=ReplyKeyboardRemove())
+        return
+    if is_admin_user(message.from_user.id):
+        kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+        await message.answer("Действие отменено.", reply_markup=kb)
+    else:
+        await message.answer("Действие отменено.", reply_markup=ReplyKeyboardRemove())
 
 
 @router.message(F.text.startswith("/admin_panel"))
@@ -254,6 +282,26 @@ async def btn_list_7(message: Message):
             ]
         )
         await message.answer(reply)
+
+
+@router.message(F.text == "🚨 Просроченные")
+async def btn_expired(message: Message):
+    await cmd_expired(message)
+
+
+@router.message(F.text == "➕ Добавить")
+async def btn_start_add(message: Message, state: FSMContext):
+    await cmd_add(message, state)
+
+
+@router.message(F.text == "📢 Рассылка")
+async def btn_start_broadcast(message: Message, state: FSMContext):
+    await cmd_broadcast(message, state)
+
+
+@router.message(F.text == "▶️ Проверить сейчас")
+async def btn_run_check(message: Message):
+    await cmd_run_check(message)
 
 
 @router.message(F.text == "🔍 Проверить")
@@ -1239,6 +1287,194 @@ async def cmd_status(message: Message):
         parts.append("\nСегодня:\n" + "\n".join(today[:10]))
 
     await message.answer("\n".join(parts))
+
+
+@router.message(F.text == "/mycard")
+async def cmd_mycard(message: Message):
+    row = find_employee_by_chat_id(message.from_user.id)
+    if not row:
+        await message.answer(
+            "Вы не зарегистрированы. Используйте /start для регистрации."
+        )
+        return
+    emp = get_employee_row_dict(row)
+    expiry_display = fmt_date(emp.get("Дата окончания") or "") or "не указана"
+    status = employee_status_text(emp)
+    await message.answer(
+        "Ваша карточка:\n\n"
+        f"ФИО: {emp.get('ФИО') or '—'}\n"
+        f"Должность: {emp.get('Должность') or '—'}\n"
+        f"Подразделение: {emp.get('Подразделение') or '—'}\n"
+        f"Дата окончания медкнижки: {expiry_display}\n"
+        f"Статус: {status}"
+    )
+
+
+@router.message(F.text == "/expired")
+async def cmd_expired(message: Message):
+    if not is_admin_user(message.from_user.id):
+        await message.answer("У вас нет прав.")
+        return
+    today = datetime.now().date()
+    employees = get_all_employees()
+    expired = []
+    for e in employees:
+        try:
+            expiry = datetime.strptime(e["Дата окончания"], "%Y-%m-%d").date()
+            if expiry < today:
+                expired.append((today - expiry).days, e)
+        except Exception:
+            continue
+    if not expired:
+        await message.answer("Просроченных медкнижек нет.")
+        return
+    expired.sort(key=lambda x: -x[0])
+    lines = [
+        f"{e['ФИО']} ({e.get('Должность') or '—'}) — {fmt_date(e['Дата окончания'])} (просрочена на {d} дн.)"
+        for d, e in expired
+    ]
+    await message.answer(f"Просроченные медкнижки ({len(expired)}):\n\n" + "\n".join(lines))
+
+
+@router.message(F.text == "/run_check")
+async def cmd_run_check(message: Message):
+    if not is_admin_user(message.from_user.id):
+        await message.answer("У вас нет прав.")
+        return
+    await message.answer("Запускаю проверку медкнижек...")
+    from scheduler import daily_check
+    await daily_check(message.bot)
+    await message.answer("Проверка завершена.")
+
+
+@router.message(F.text == "/add")
+async def cmd_add(message: Message, state: FSMContext):
+    if not is_admin_user(message.from_user.id):
+        await message.answer("У вас нет прав.")
+        return
+    await state.set_state(AdminActions.waiting_add_fio)
+    await message.answer(
+        "Добавление сотрудника.\n\nВведите ФИО (Фамилия Имя Отчество):",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(AdminActions.waiting_add_fio)
+async def action_add_fio(message: Message, state: FSMContext):
+    fio = (message.text or "").strip()
+    if len(fio.split()) < 2:
+        await message.answer("Введите минимум фамилию и имя (два слова).")
+        return
+    await state.update_data(add_fio=fio)
+    await state.set_state(AdminActions.waiting_add_phone)
+    await message.answer(
+        "Введите номер телефона:\nПример: +79161234567",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(AdminActions.waiting_add_phone)
+async def action_add_phone(message: Message, state: FSMContext):
+    phone = normalize_phone_input((message.text or "").strip())
+    if not phone:
+        await message.answer(
+            "Неверный формат. Пример: +79161234567",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+    await state.update_data(add_phone=phone)
+    await state.set_state(AdminActions.waiting_add_position)
+    await message.answer("Выберите должность:", reply_markup=position_keyboard())
+
+
+@router.message(AdminActions.waiting_add_position)
+async def action_add_position(message: Message, state: FSMContext):
+    position = (message.text or "").strip()
+    if position not in POSITIONS:
+        await message.answer("Выберите должность из списка.", reply_markup=position_keyboard())
+        return
+    await state.update_data(add_position=position)
+    await state.set_state(AdminActions.waiting_add_expiry)
+    await message.answer(
+        "Введите дату окончания медкнижки или пропустите.\n\nФормат: ДД-ММ-ГГГГ\nПример: 31-12-2026",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="⏭ Пропустить")],
+                [KeyboardButton(text="❌ Отмена")],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        ),
+    )
+
+
+@router.message(AdminActions.waiting_add_expiry)
+async def action_add_expiry(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    expiry = ""
+    if text != "⏭ Пропустить":
+        try:
+            expiry = datetime.strptime(text, "%d-%m-%Y").date().isoformat()
+        except ValueError:
+            await message.answer("Дата должна быть в формате ДД-ММ-ГГГГ, например 31-12-2026.")
+            return
+    data = await state.get_data()
+    fio = data["add_fio"]
+    phone = data["add_phone"]
+    position = data["add_position"]
+    sub = POSITION_TO_SUBDIVISION.get(position, "")
+    add_employee_row(fio=fio, phone=phone, position=position, subdivision=sub, expiry=expiry)
+    await state.clear()
+    kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+    expiry_display = fmt_date(expiry) if expiry else "не указана"
+    await message.answer(
+        f"Сотрудник добавлен:\n\n"
+        f"ФИО: {fio}\n"
+        f"Телефон: {phone}\n"
+        f"Должность: {position}\n"
+        f"Подразделение: {sub or '—'}\n"
+        f"Дата окончания: {expiry_display}\n\n"
+        "Сотрудник сможет завершить регистрацию через /start.",
+        reply_markup=kb,
+    )
+
+
+@router.message(F.text == "/broadcast")
+async def cmd_broadcast(message: Message, state: FSMContext):
+    if not is_admin_user(message.from_user.id):
+        await message.answer("У вас нет прав.")
+        return
+    await state.set_state(AdminActions.waiting_broadcast)
+    await message.answer(
+        "Введите текст рассылки.\nОн будет отправлен всем зарегистрированным сотрудникам:",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(AdminActions.waiting_broadcast)
+async def action_broadcast(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Текст не может быть пустым.")
+        return
+    employees = get_employee_rows(include_without_chat=False)
+    sent = 0
+    failed = 0
+    for emp in employees:
+        chat_id_str = (emp.get("Chat ID") or "").strip()
+        if not chat_id_str or not chat_id_str.lstrip("-").isdigit():
+            continue
+        try:
+            await message.bot.send_message(int(chat_id_str), text)
+            sent += 1
+        except Exception:
+            failed += 1
+    await state.clear()
+    kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+    await message.answer(
+        f"Рассылка завершена.\nОтправлено: {sent}\nОшибок: {failed}",
+        reply_markup=kb,
+    )
 
 
 @router.message(F.text.startswith("/edit"))
