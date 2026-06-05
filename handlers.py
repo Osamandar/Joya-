@@ -550,7 +550,13 @@ async def action_edit_field(message: Message, state: FSMContext):
         return
     if text == "◀️ Назад":
         data = await state.get_data()
-        await _show_employee_card(message, state, data["edit_row"], data.get("edit_fio", ""))
+        row = data.get("edit_row")
+        if not row:
+            await state.clear()
+            kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()
+            await message.answer("Сессия устарела, вернитесь в меню.", reply_markup=kb)
+            return
+        await _show_employee_card(message, state, row, data.get("edit_fio", ""))
         return
     field = _EDIT_FIELD_BUTTONS.get(text)
     if not field:

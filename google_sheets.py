@@ -181,13 +181,14 @@ def _normalize_admin_record(row_number: int, record: dict) -> dict | None:
     }
 
 
-# FIX #1 + #7: новая авторизация через google-auth с retry при ошибках API
-@retry(
+_RETRY_KWARGS = dict(
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(4),
     retry=retry_if_exception_type((gspread.exceptions.APIError, ConnectionError, TimeoutError)),
     reraise=True,
 )
+
+
 def get_client():
     global _client
     if _client is None:
@@ -354,9 +355,12 @@ def complete_employee_registration(
     """Заполняет данные для существующей строки (добавленной админом без Chat ID)."""
     ws = get_employees_sheet()
 
-    # Получаем текущие значения флагов «в группе» за один запрос
-    current_in_main = get_cell(row_number, COL_IN_MAIN)
-    current_in_sub  = get_cell(row_number, COL_IN_SUB)
+    # Читаем оба флага «в группе» одним запросом вместо двух отдельных get_cell()
+    cell_main = f"{_col_letter(COL_IN_MAIN)}{row_number}"
+    cell_sub  = f"{_col_letter(COL_IN_SUB)}{row_number}"
+    raw = ws.batch_get([cell_main, cell_sub])
+    current_in_main = raw[0][0][0] if raw[0] else ""
+    current_in_sub  = raw[1][0][0] if raw[1] else ""
 
     # Строим список обновлений и выполняем их одним batch_update
     updates = [
@@ -396,6 +400,7 @@ def get_subdivision_names():
     return list(get_sub_groups().keys())
 
 
+@retry(**_RETRY_KWARGS)
 def _get_raw_employees() -> list[dict]:
     """Fetches all employee rows with row_number from Sheets, using TTL cache."""
     cached = _cache_get("employee_rows")

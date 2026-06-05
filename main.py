@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def _build_storage():
+async def _build_storage():
     """
     Возвращает RedisStorage если задана переменная REDIS_URL,
     иначе — MemoryStorage (FSM не переживёт перезапуск бота).
@@ -30,6 +30,8 @@ def _build_storage():
         try:
             from aiogram.fsm.storage.redis import RedisStorage
             storage = RedisStorage.from_url(redis_url)
+            # ping проверяет реальное соединение — from_url() ленивый и не падает
+            await storage.redis.ping()
             logger.info("FSM: используем RedisStorage (%s)", redis_url.split("@")[-1])
             return storage
         except Exception as exc:
@@ -57,7 +59,7 @@ async def main():
         raise SystemExit(f"Ошибка подключения к Google Sheets: {exc}") from exc
 
     bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher(storage=_build_storage())
+    dp = Dispatcher(storage=await _build_storage())
     dp.include_router(router)
 
     await setup_commands(bot)
