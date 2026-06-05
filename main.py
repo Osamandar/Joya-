@@ -6,7 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import BOT_TOKEN, SCHEDULE_HOUR, SCHEDULE_MINUTE
+from config import BOT_TOKEN, SCHEDULE_HOUR, SCHEDULE_MINUTE, DEVELOPER_CHAT_ID
 from google_sheets import ensure_google_sheets_ready
 from handlers import router
 from scheduler import daily_check
@@ -14,6 +14,41 @@ from commands import setup_commands
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_redis_was_healthy = True
+
+
+async def redis_healthcheck(bot: Bot, storage):
+    global _redis_was_healthy
+    try:
+        from aiogram.fsm.storage.redis import RedisStorage
+        if not isinstance(storage, RedisStorage):
+            return
+    except ImportError:
+        return
+
+    try:
+        await storage.redis.ping()
+        if not _redis_was_healthy:
+            _redis_was_healthy = True
+            logger.info("Redis: соединение восстановлено")
+            if DEVELOPER_CHAT_ID:
+                try:
+                    await bot.send_message(DEVELOPER_CHAT_ID, "✅ Redis соединение восстановлено, FSM работает нормально.")
+                except Exception:
+                    pass
+    except Exception as exc:
+        if _redis_was_healthy:
+            _redis_was_healthy = False
+            logger.error("Redis недоступен: %s", exc)
+            if DEVELOPER_CHAT_ID:
+                try:
+                    await bot.send_message(
+                        DEVELOPER_CHAT_ID,
+                        f"⚠️ Redis недоступен: {exc}\nFSM-состояния пользователей могут быть потеряны.",
+                    )
+                except Exception:
+                    pass
 
 
 async def _build_storage():
@@ -74,6 +109,12 @@ async def main():
         minute=SCHEDULE_MINUTE,
         args=[bot],
         misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        redis_healthcheck,
+        "interval",
+        seconds=60,
+        args=[bot, dp.storage],
     )
     scheduler.start()
 

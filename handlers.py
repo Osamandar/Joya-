@@ -899,6 +899,16 @@ async def finish_registration(message: Message, state: FSMContext, row_num: int 
             pd_consent=consent,
         )
     else:
+        # Защита от гонки: перепроверяем что строка ещё не занята другим пользователем
+        current_chat_id = get_cell(row_num, COL_CHAT_ID)
+        if current_chat_id and current_chat_id != str(chat_id):
+            await state.clear()
+            await message.answer(
+                "Ваши данные уже были зарегистрированы в другом аккаунте. "
+                "Обратитесь к администратору.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return
         complete_employee_registration(
             row_num,
             chat_id=chat_id,
