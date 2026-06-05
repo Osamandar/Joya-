@@ -4,7 +4,13 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from oauth2client.service_account import ServiceAccountCredentials
+
+# FIX #1: заменили устаревший oauth2client на google-auth
+from google.oauth2.service_account import Credentials
+
+# FIX #7: добавили tenacity для автоматического повтора при ошибках API
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+
 from config import (
     SPREADSHEET_NAME, SHEET_EMPLOYEES, SHEET_ADMINS, SHEET_GROUPS,
     COL_FIO, COL_PHONE, COL_POSITION, COL_EXPIRY, COL_CHAT_ID,
@@ -14,7 +20,11 @@ from config import (
 import re
 
 GOOGLE_CREDENTIALS_FILE = Path(__file__).with_name("google_credentials.json")
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+SCOPE = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive",
+]
+
 EMPLOYEE_STATUS_HEADER = "Статус уведомлений"
 ADMIN_HEADERS = [
     "Chat ID",
@@ -27,11 +37,24 @@ ADMIN_HEADERS = [
     "Дата выдачи",
     "Дата запроса",
 ]
+
+# FIX #5: заменили магические числа колонок константами для листа «Админы»
+COL_ADMIN_CHAT_ID    = 1
+COL_ADMIN_FIO        = 2
+COL_ADMIN_USERNAME   = 3
+COL_ADMIN_ROLE       = 4
+COL_ADMIN_SUBDIV     = 5
+COL_ADMIN_ACTIVE     = 6
+COL_ADMIN_GRANTED_BY = 7
+COL_ADMIN_GRANTED_AT = 8
+COL_ADMIN_REQUESTED  = 9
+
 ADMIN_ROLE_OWNER = "owner"
 ADMIN_ROLE_ADMIN = "admin"
 ADMIN_STATE_ACTIVE = "да"
 ADMIN_STATE_PENDING = "заявка"
 ADMIN_STATE_INACTIVE = "нет"
+
 _employees_service_column_ready = False
 _admin_sheet_ready = False
 _client = None
@@ -64,7 +87,7 @@ def _cache_clear(*keys: str):
 
 
 def normalize_phone(phone) -> str:
-    """Приводит телефон к виду +7XXXXXXXXXX (Google Sheets часто хранит без +)."""
+    """Приводит телефон к виду +7XXXXXXXXXX."""
     digits = re.sub(r"\D", "", str(phone))
     if len(digits) == 11 and digits.startswith("8"):
         digits = "7" + digits[1:]
@@ -158,17 +181,29 @@ def _normalize_admin_record(row_number: int, record: dict) -> dict | None:
     }
 
 
+# FIX #1 + #7: новая авторизация через google-auth с retry при ошибках API
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(4),
+    retry=retry_if_exception_type((gspread.exceptions.APIError, ConnectionError, TimeoutError)),
+    reraise=True,
+)
 def get_client():
     global _client
     if _client is None:
         env_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
         if env_json:
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(env_json), scope)
+            creds = Credentials.from_service_account_info(
+                json.loads(env_json), scopes=SCOPE
+            )
         elif GOOGLE_CREDENTIALS_FILE.is_file():
-            creds = ServiceAccountCredentials.from_json_keyfile_name(str(GOOGLE_CREDENTIALS_FILE), scope)
+            creds = Credentials.from_service_account_file(
+                str(GOOGLE_CREDENTIALS_FILE), scopes=SCOPE
+            )
         else:
             raise RuntimeError(
-                f"Не найден файл {GOOGLE_CREDENTIALS_FILE.name} и не задана переменная GOOGLE_CREDENTIALS_JSON."
+                f"Не найден файл {GOOGLE_CREDENTIALS_FILE.name} "
+                "и не задана переменная GOOGLE_CREDENTIALS_JSON."
             )
         _client = gspread.authorize(creds)
     return _client
@@ -191,10 +226,12 @@ def get_employees_sheet():
     _ensure_employee_service_column(ws)
     return ws
 
+
 def get_admins_sheet():
     ws = get_spreadsheet().worksheet(SHEET_ADMINS)
     _ensure_admin_sheet_structure(ws)
     return ws
+
 
 def get_groups_sheet():
     return get_spreadsheet().worksheet(SHEET_GROUPS)
@@ -210,6 +247,7 @@ def ensure_google_sheets_ready():
             "В Google Таблице не хватает обязательных листов. "
             "Запусти `python3 setup_sheet.py`, чтобы подготовить структуру."
         ) from exc
+
 
 def find_employee_by_chat_id(chat_id: int):
     """Ищет строку по Chat ID. Возвращает номер строки или None."""
@@ -235,18 +273,20 @@ def find_employee_by_phone(phone: str):
 
 
 def find_employee_by_fio_phone(fio: str, phone: str):
-    """Ищет строку сотрудника с пустым Chat ID по ФИО и телефону. Возвращает номер строки или None."""
+    """Ищет строку сотрудника с пустым Chat ID по ФИО и телефону."""
     ws = get_employees_sheet()
-    # Получаем все записи как список списков (без заголовка)
-    records = ws.get_all_values()[1:]  # пропускаем заголовок
+    records = ws.get_all_values()[1:]
     for i, row in enumerate(records):
         if len(row) < COL_PHONE:
             continue
-        if row[COL_FIO-1].strip().lower() == fio.strip().lower() and \
-           normalize_phone(row[COL_PHONE - 1]) == normalize_phone(phone) and \
-           (len(row) < COL_CHAT_ID or not row[COL_CHAT_ID-1].strip()):
-            return i + 2  # +2: учёт заголовка и индексации с 1
+        if (
+            row[COL_FIO - 1].strip().lower() == fio.strip().lower()
+            and normalize_phone(row[COL_PHONE - 1]) == normalize_phone(phone)
+            and (len(row) < COL_CHAT_ID or not row[COL_CHAT_ID - 1].strip())
+        ):
+            return i + 2
     return None
+
 
 def update_chat_id(row_number: int, chat_id: int):
     ws = get_employees_sheet()
@@ -302,6 +342,7 @@ def add_employee_row(
     return ws.row_count
 
 
+# FIX #4: заменили 5–6 отдельных update_cell на один batch_update (экономит квоту API)
 def complete_employee_registration(
     row_number: int,
     chat_id: int,
@@ -312,17 +353,42 @@ def complete_employee_registration(
 ):
     """Заполняет данные для существующей строки (добавленной админом без Chat ID)."""
     ws = get_employees_sheet()
+
+    # Получаем текущие значения флагов «в группе» за один запрос
+    current_in_main = get_cell(row_number, COL_IN_MAIN)
+    current_in_sub  = get_cell(row_number, COL_IN_SUB)
+
+    # Строим список обновлений и выполняем их одним batch_update
+    updates = [
+        {"range": f"{_col_letter(COL_POSITION)}{row_number}",   "values": [[position]]},
+        {"range": f"{_col_letter(COL_CHAT_ID)}{row_number}",    "values": [[str(chat_id)]]},
+        {"range": f"{_col_letter(COL_SUBDIVISION)}{row_number}", "values": [[subdivision]]},
+        {"range": f"{_col_letter(COL_PD_CONSENT)}{row_number}", "values": [[pd_consent]]},
+    ]
     if phone:
-        ws.update_cell(row_number, COL_PHONE, normalize_phone(phone))
-    ws.update_cell(row_number, COL_POSITION, position)
-    ws.update_cell(row_number, COL_CHAT_ID, str(chat_id))
-    ws.update_cell(row_number, COL_SUBDIVISION, subdivision)
-    ws.update_cell(row_number, COL_PD_CONSENT, pd_consent)
-    if not get_cell(row_number, COL_IN_MAIN):
-        ws.update_cell(row_number, COL_IN_MAIN, "да")
-    if not get_cell(row_number, COL_IN_SUB):
-        ws.update_cell(row_number, COL_IN_SUB, "да")
+        updates.append(
+            {"range": f"{_col_letter(COL_PHONE)}{row_number}", "values": [[normalize_phone(phone)]]}
+        )
+    if not current_in_main:
+        updates.append(
+            {"range": f"{_col_letter(COL_IN_MAIN)}{row_number}", "values": [["да"]]}
+        )
+    if not current_in_sub:
+        updates.append(
+            {"range": f"{_col_letter(COL_IN_SUB)}{row_number}", "values": [["да"]]}
+        )
+
+    ws.batch_update(updates, value_input_option="USER_ENTERED")
     _cache_clear("employee_rows")
+
+
+def _col_letter(col: int) -> str:
+    """Преобразует номер колонки (1-based) в букву/буквы A, B, …, Z, AA, AB, …"""
+    result = ""
+    while col > 0:
+        col, remainder = divmod(col - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
 
 
 def get_subdivision_names():
@@ -496,6 +562,7 @@ def _append_admin_row(
     _cache_clear("admin_rows")
 
 
+# FIX #5: используем именованные константы вместо магических чисел
 def _update_admin_field(row_number: int, col: int, value: str):
     ws = get_admins_sheet()
     ws.update_cell(row_number, col, value)
@@ -510,19 +577,19 @@ def create_or_update_admin_request(chat_id: int, fio: str, username: str, subdiv
 
     if admin:
         row_number = admin["row_number"]
-        _update_admin_field(row_number, 2, fio)
-        _update_admin_field(row_number, 3, username_clean)
+        _update_admin_field(row_number, COL_ADMIN_FIO,      fio)
+        _update_admin_field(row_number, COL_ADMIN_USERNAME,  username_clean)
         if subdivision:
-            _update_admin_field(row_number, 5, subdivision)
+            _update_admin_field(row_number, COL_ADMIN_SUBDIV, subdivision)
 
         if admin["state"] == "active":
             return "active"
         if admin["state"] == "pending":
-            _update_admin_field(row_number, 9, request_date)
+            _update_admin_field(row_number, COL_ADMIN_REQUESTED, request_date)
             return "pending"
 
-        _update_admin_field(row_number, 6, ADMIN_STATE_PENDING)
-        _update_admin_field(row_number, 9, request_date)
+        _update_admin_field(row_number, COL_ADMIN_ACTIVE,   ADMIN_STATE_PENDING)
+        _update_admin_field(row_number, COL_ADMIN_REQUESTED, request_date)
         return "requested"
 
     _append_admin_row(
@@ -550,12 +617,12 @@ def approve_admin_access(
     granted_at = _today_iso()
     if admin:
         row_number = admin["row_number"]
-        _update_admin_field(row_number, 4, role)
-        _update_admin_field(row_number, 6, ADMIN_STATE_ACTIVE)
-        _update_admin_field(row_number, 7, granted_by)
-        _update_admin_field(row_number, 8, granted_at)
+        _update_admin_field(row_number, COL_ADMIN_ROLE,       role)
+        _update_admin_field(row_number, COL_ADMIN_ACTIVE,     ADMIN_STATE_ACTIVE)
+        _update_admin_field(row_number, COL_ADMIN_GRANTED_BY, granted_by)
+        _update_admin_field(row_number, COL_ADMIN_GRANTED_AT, granted_at)
         if subdivision:
-            _update_admin_field(row_number, 5, subdivision)
+            _update_admin_field(row_number, COL_ADMIN_SUBDIV, subdivision)
     else:
         _append_admin_row(
             chat_id=chat_id,
@@ -574,8 +641,9 @@ def revoke_admin_access(chat_id: int) -> dict | None:
     admin = get_admin_record(chat_id)
     if not admin:
         return None
-    _update_admin_field(admin["row_number"], 6, ADMIN_STATE_INACTIVE)
+    _update_admin_field(admin["row_number"], COL_ADMIN_ACTIVE, ADMIN_STATE_INACTIVE)
     return get_admin_record(chat_id)
+
 
 def get_sub_groups():
     """Словарь {название подразделения: ID группы Telegram}."""
@@ -591,7 +659,7 @@ def get_sub_groups():
             continue
         name = (
             rec.get("Подразделение")
-            or rec.get("Должность")  # старый формат листа
+            or rec.get("Должность")
             or ""
         ).strip()
         if name and str(group_id).strip().lstrip("-").isdigit():
@@ -599,8 +667,9 @@ def get_sub_groups():
     _cache_set("group_rows", groups, _CACHE_TTL_GROUPS)
     return groups
 
+
 def set_row_red(row_number: int):
-    """Закрашивает строку красным."""
+    """Закрашивает строку красным (просрочена)."""
     ws = get_employees_sheet()
     ws.format(f"{row_number}:{row_number}", {
         "backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8}
@@ -608,6 +677,7 @@ def set_row_red(row_number: int):
 
 
 def set_row_yellow(row_number: int):
+    """Закрашивает строку жёлтым (в процессе переоформления)."""
     ws = get_employees_sheet()
     ws.format(f"{row_number}:{row_number}", {
         "backgroundColor": {"red": 1, "green": 0.95, "blue": 0.4}
@@ -615,6 +685,7 @@ def set_row_yellow(row_number: int):
 
 
 def set_row_default(row_number: int):
+    """Сбрасывает цвет строки на белый."""
     ws = get_employees_sheet()
     ws.format(f"{row_number}:{row_number}", {
         "backgroundColor": {"red": 1, "green": 1, "blue": 1}
@@ -654,13 +725,13 @@ def get_employee_row_dict(row_number: int) -> dict:
     while len(values) < COL_STATUS:
         values.append("")
     return {
-        "ФИО": values[COL_FIO - 1].strip(),
-        "Телефон": values[COL_PHONE - 1].strip(),
-        "Должность": values[COL_POSITION - 1].strip(),
-        "Дата окончания": values[COL_EXPIRY - 1].strip(),
-        "Chat ID": values[COL_CHAT_ID - 1].strip(),
-        "В главной группе": values[COL_IN_MAIN - 1].strip(),
+        "ФИО":                   values[COL_FIO - 1].strip(),
+        "Телефон":               values[COL_PHONE - 1].strip(),
+        "Должность":             values[COL_POSITION - 1].strip(),
+        "Дата окончания":        values[COL_EXPIRY - 1].strip(),
+        "Chat ID":               values[COL_CHAT_ID - 1].strip(),
+        "В главной группе":      values[COL_IN_MAIN - 1].strip(),
         "В группе подразделения": values[COL_IN_SUB - 1].strip(),
-        "Подразделение": values[COL_SUBDIVISION - 1].strip(),
-        "Статус уведомлений": values[COL_STATUS - 1].strip(),
+        "Подразделение":         values[COL_SUBDIVISION - 1].strip(),
+        "Статус уведомлений":    values[COL_STATUS - 1].strip(),
     }

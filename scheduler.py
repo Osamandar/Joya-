@@ -1,5 +1,10 @@
 import asyncio
+import logging
+
+# FIX #3: используем zoneinfo для корректного московского времени
+from zoneinfo import ZoneInfo
 from datetime import datetime
+
 from aiogram import Bot
 from config import MAIN_GROUP_ID, DEVELOPER_CHAT_ID
 from google_sheets import (
@@ -11,7 +16,8 @@ from google_sheets import (
     set_row_default,
     set_row_red,
 )
-import logging
+
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 def _fmt_date(iso_str: str) -> str:
@@ -40,7 +46,9 @@ def _expired_line(fio: str, position: str, expiry_str: str, delta: int) -> str:
 
 
 async def daily_check(bot: Bot):
-    today = datetime.now().date()
+    # FIX #3: now() с явным московским часовым поясом
+    today = datetime.now(MOSCOW_TZ).date()
+
     employees = get_all_employees(include_without_chat=True, with_row_numbers=True)
     admins = get_notification_admin_ids()
     sub_groups = get_sub_groups()
@@ -86,13 +94,20 @@ async def daily_check(bot: Bot):
 
         if delta in (7, 6):
             if chat_id:
-                msg = f"Уважаемый(ая) {fio}, срок вашей медицинской книжки истекает {expiry_str} (через {delta} дн.)."
+                msg = (
+                    f"Уважаемый(ая) {fio}, срок вашей медицинской книжки "
+                    f"истекает {expiry_str} (через {delta} дн.)."
+                )
                 await send_safe(bot, chat_id, msg)
                 await asyncio.sleep(0.15)
             admins_list.add(f"{fio} ({pos}) - {expiry_str}")
+
         elif delta in (5, 4):
             if chat_id:
-                msg = f"Уважаемый(ая) {fio}, срок вашей медицинской книжки истекает {expiry_str} (через {delta} дн.)."
+                msg = (
+                    f"Уважаемый(ая) {fio}, срок вашей медицинской книжки "
+                    f"истекает {expiry_str} (через {delta} дн.)."
+                )
                 await send_safe(bot, chat_id, msg)
                 await asyncio.sleep(0.15)
             admins_list.add(f"{fio} ({pos}) - {expiry_str}")
@@ -100,6 +115,7 @@ async def daily_check(bot: Bot):
             if in_sub and sub_name and sub_name in sub_groups:
                 group_id = sub_groups[sub_name]
                 sub_group_msgs.setdefault(group_id, []).append(f"{fio} - {expiry_str}")
+
         elif delta in (3, 2, 1):
             admins_list.add(f"{fio} ({pos}) - {expiry_str}")
             if in_main:
@@ -118,12 +134,18 @@ async def daily_check(bot: Bot):
             await asyncio.sleep(0.15)
 
     for group_id, items in sub_group_msgs.items():
-        text = "Внимание! Срок медкнижек истекает через 4-5 дней у следующих сотрудников:\n" + "\n".join(items)
+        text = (
+            "Внимание! Срок медкнижек истекает через 4-5 дней у следующих сотрудников:\n"
+            + "\n".join(items)
+        )
         await send_safe(bot, group_id, text)
         await asyncio.sleep(0.15)
 
     if main_group_list and MAIN_GROUP_ID:
-        text = "Внимание! Через 1-3 дня истекают медкнижки у сотрудников:\n" + "\n".join(main_group_list)
+        text = (
+            "Внимание! Через 1-3 дня истекают медкнижки у сотрудников:\n"
+            + "\n".join(main_group_list)
+        )
         await send_safe(bot, MAIN_GROUP_ID, text)
         await asyncio.sleep(0.15)
 
