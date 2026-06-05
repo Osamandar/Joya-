@@ -359,8 +359,8 @@ def complete_employee_registration(
     cell_main = f"{_col_letter(COL_IN_MAIN)}{row_number}"
     cell_sub  = f"{_col_letter(COL_IN_SUB)}{row_number}"
     raw = ws.batch_get([cell_main, cell_sub])
-    current_in_main = raw[0][0][0] if raw[0] else ""
-    current_in_sub  = raw[1][0][0] if raw[1] else ""
+    current_in_main = raw[0][0][0] if (raw[0] and raw[0][0]) else ""
+    current_in_sub  = raw[1][0][0] if (raw[1] and raw[1][0]) else ""
 
     # Строим список обновлений и выполняем их одним batch_update
     updates = [
