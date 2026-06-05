@@ -1,11 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Router, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import StateFilter
-import re
 
 from commands import set_user_commands
 
@@ -54,11 +53,41 @@ from config import (
     POSITION_TO_SUBDIVISION,
     PD_CONSENT_TEXT,
 )
+from keyboards import (
+    CONSENT_YES,
+    _EDIT_FIELD_BUTTONS,
+    action_keyboard,
+    cancel_keyboard,
+    consent_keyboard,
+    edit_field_keyboard,
+    get_admin_keyboard,
+    get_owner_keyboard,
+    phone_keyboard,
+    position_keyboard,
+    subdivision_keyboard,
+    yes_no_keyboard,
+)
+from formatters import (
+    actor_identity,
+    admin_card,
+    admin_role_label,
+    admin_status_text,
+    employee_card,
+    fmt_date,
+    pd_consent_value,
+    user_display_name,
+    user_username,
+)
+from validators import (
+    _apply_employee_edit,
+    find_single_employee,
+    normalize_phone_input,
+    resolve_admin_role,
+    resolve_edit_field,
+    resolve_subdivision,
+)
 
 router = Router()
-
-CONSENT_YES = "✅ Согласен на обработку ПДн"
-CONSENT_NO = "❌ Не согласен"
 
 
 class Registration(StatesGroup):
@@ -69,66 +98,6 @@ class Registration(StatesGroup):
     waiting_subdivision = State()
 
 
-EDIT_FIELD_ALIASES = {
-    "date": "expiry",
-    "expiry": "expiry",
-    "дата": "expiry",
-    "срок": "expiry",
-    "position": "position",
-    "должность": "position",
-    "subdivision": "subdivision",
-    "подразделение": "subdivision",
-    "main": "main_group",
-    "главная": "main_group",
-    "maingroup": "main_group",
-    "sub": "sub_group",
-    "subgroup": "sub_group",
-    "группа": "sub_group",
-    "подгруппа": "sub_group",
-    "phone": "phone",
-    "телефон": "phone",
-}
-ADMIN_ROLE_ALIASES = {
-    "admin": ADMIN_ROLE_ADMIN,
-    "админ": ADMIN_ROLE_ADMIN,
-    "owner": ADMIN_ROLE_OWNER,
-    "владелец": ADMIN_ROLE_OWNER,
-}
-ADMIN_ROLE_LABELS = {
-    ADMIN_ROLE_ADMIN: "админ",
-    ADMIN_ROLE_OWNER: "владелец",
-}
-
-
-def consent_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=CONSENT_YES)], [KeyboardButton(text=CONSENT_NO)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
-def phone_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📱 Отправить номер из Telegram", request_contact=True)],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
-def position_keyboard() -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton(text=p)] for p in POSITIONS]
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
-
-
-def subdivision_keyboard(names: list[str]) -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton(text=name)] for name in names]
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
-
-
-# --- Admin panel: keyboards and simple dialog states ---
 class AdminActions(StatesGroup):
     waiting_find_filter = State()
     waiting_find_search = State()
@@ -147,92 +116,12 @@ class AdminActions(StatesGroup):
     waiting_delete_confirm = State()
 
 
-# Кнопки полей редактирования → внутренний ключ
-_EDIT_FIELD_BUTTONS = {
-    "📅 Дата окончания": "expiry",
-    "📱 Телефон": "phone",
-    "💼 Должность": "position",
-    "🏢 Подразделение": "subdivision",
-    "🟡 В процессе": "in_progress",
-}
+def is_admin_user(user_id: int) -> bool:
+    return has_admin_access(user_id)
 
 
-def edit_field_keyboard() -> ReplyKeyboardMarkup:
-    keys = list(_EDIT_FIELD_BUTTONS)
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=keys[0]), KeyboardButton(text=keys[1])],
-            [KeyboardButton(text=keys[2]), KeyboardButton(text=keys[3])],
-            [KeyboardButton(text=keys[4])],
-            [KeyboardButton(text="◀️ Назад"), KeyboardButton(text="❌ Отмена")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
-def _action_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="🗑 Удалить")],
-            [KeyboardButton(text="◀️ Назад"), KeyboardButton(text="❌ Отмена")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
-async def _show_employee_card(message: Message, state: FSMContext, row_number: int, found_fio: str):
-    emp = get_employee_row_dict(row_number)
-    await state.update_data(found_row=row_number, found_fio=found_fio)
-    await state.set_state(AdminActions.waiting_find_action)
-    await message.answer(employee_card(emp), reply_markup=_action_keyboard())
-
-
-def yes_no_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Да"), KeyboardButton(text="Нет")],
-            [KeyboardButton(text="❌ Отмена")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
-def cancel_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="❌ Отмена")]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
-def get_admin_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📊 Статус"), KeyboardButton(text="📋 Список на 7 дней")],
-            [KeyboardButton(text="🚨 Просроченные"), KeyboardButton(text="🔍 Проверить")],
-            [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="🗑 Удалить")],
-            [KeyboardButton(text="▶️ Проверить сейчас"), KeyboardButton(text="❌ Закрыть меню")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
-
-
-def get_owner_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📊 Статус"), KeyboardButton(text="📋 Список на 7 дней")],
-            [KeyboardButton(text="🚨 Просроченные"), KeyboardButton(text="🔍 Проверить")],
-            [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="🗑 Удалить")],
-            [KeyboardButton(text="▶️ Проверить сейчас"), KeyboardButton(text="👥 Администраторы")],
-            [KeyboardButton(text="❌ Закрыть меню")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
+def is_owner_user(user_id: int) -> bool:
+    return has_owner_access(user_id)
 
 
 async def send_paginated(message: Message, text: str, max_len: int = 4000):
@@ -272,7 +161,6 @@ def _group_by_position(employees: list) -> list[tuple[str, list]]:
 
 
 async def _show_list_result(message: Message, subdivision: str | None, days: int = 7):
-    from datetime import timedelta
     today = datetime.now().date()
     cutoff = today + timedelta(days=days)
     employees = get_all_employees()
@@ -320,6 +208,102 @@ async def _show_expired_result(message: Message, subdivision: str | None):
             delta = (today - datetime.strptime(e["Дата окончания"], "%Y-%m-%d").date()).days
             lines.append(f"  {e['ФИО']} — {fmt_date(e['Дата окончания'])} ({delta} дн.)")
     await send_paginated(message, "\n".join(lines))
+
+
+async def _show_employee_list(message: Message, state: FSMContext, employees: list, next_state=None):
+    if next_state is None:
+        next_state = AdminActions.waiting_find_employee
+    if not employees:
+        await message.answer("Сотрудники не найдены. Попробуйте другой запрос.", reply_markup=cancel_keyboard())
+        return
+    MAX = 20
+    shown = employees[:MAX]
+    name_counts: dict[str, int] = {}
+    for e in shown:
+        name_counts[e["ФИО"]] = name_counts.get(e["ФИО"], 0) + 1
+    emp_map: dict[str, int] = {}
+    rows = []
+    for e in shown:
+        fio = e["ФИО"]
+        label = f"{fio} ({e.get('Телефон') or '—'})" if name_counts[fio] > 1 else fio
+        emp_map[label] = e["row_number"]
+        rows.append([KeyboardButton(text=label)])
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+    note = f" (показаны первые {MAX}, уточните поиск)" if len(employees) > MAX else ""
+    await state.update_data(emp_map=emp_map)
+    await state.set_state(next_state)
+    await message.answer(f"Найдено: {len(employees)}{note}\n\nВыберите сотрудника:", reply_markup=kb)
+
+
+async def _show_employee_card(message: Message, state: FSMContext, row_number: int, found_fio: str):
+    emp = get_employee_row_dict(row_number)
+    await state.update_data(found_row=row_number, found_fio=found_fio)
+    await state.set_state(AdminActions.waiting_find_action)
+    await message.answer(employee_card(emp), reply_markup=action_keyboard())
+
+
+async def notify_admins(message: Message, text: str):
+    for admin_id in get_notification_admin_ids():
+        try:
+            await message.bot.send_message(admin_id, text)
+        except Exception:
+            pass
+
+
+async def finish_registration(message: Message, state: FSMContext, row_num: int | None, is_new: bool):
+    data = await state.get_data()
+    fio = data["fio"]
+    phone = data["phone"]
+    position = data["position"]
+    subdivision = data["subdivision"]
+    consent = data["consent"]
+    chat_id = message.from_user.id
+
+    if is_new:
+        add_employee_row(
+            fio=fio,
+            phone=phone,
+            position=position,
+            chat_id=chat_id,
+            subdivision=subdivision,
+            pd_consent=consent,
+        )
+    else:
+        # Защита от гонки: перепроверяем что строка ещё не занята другим пользователем
+        current_chat_id = get_cell(row_num, COL_CHAT_ID)
+        if current_chat_id and current_chat_id != str(chat_id):
+            await state.clear()
+            await message.answer(
+                "Ваши данные уже были зарегистрированы в другом аккаунте. "
+                "Обратитесь к администратору.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return
+        complete_employee_registration(
+            row_num,
+            chat_id=chat_id,
+            position=position,
+            subdivision=subdivision,
+            pd_consent=consent,
+            phone=phone,
+        )
+
+    await message.answer(
+        "Регистрация завершена!\n\n"
+        f"ФИО: {fio}\n"
+        f"Телефон: {phone}\n"
+        f"Должность: {position}\n"
+        f"Подразделение: {subdivision}\n\n"
+        "Напоминания о медкнижке начнут приходить после того, как администратор "
+        "укажет дату окончания в таблице.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await notify_admins(
+        message,
+        f"🆕 Новая регистрация:\n{fio}\n{phone}\n{position} — {subdivision}",
+    )
+    await state.clear()
 
 
 @router.message(StateFilter("*"), F.text.in_({"❌ Отмена", "/cancel"}))
@@ -416,8 +400,6 @@ async def btn_run_check(message: Message):
     await cmd_run_check(message)
 
 
-# --- Единый поток: Проверить / Редактировать / Удалить ---
-
 async def _start_find_flow(message: Message, state: FSMContext):
     if not is_admin_user(message.from_user.id):
         await message.answer("У вас нет прав для этой команды.")
@@ -468,32 +450,6 @@ async def action_find_search(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     employees = search_employees(text, include_without_chat=True)
     await _show_employee_list(message, state, employees, next_state=AdminActions.waiting_find_employee)
-
-
-async def _show_employee_list(message: Message, state: FSMContext, employees: list, next_state=None):
-    if next_state is None:
-        next_state = AdminActions.waiting_find_employee
-    if not employees:
-        await message.answer("Сотрудники не найдены. Попробуйте другой запрос.", reply_markup=cancel_keyboard())
-        return
-    MAX = 20
-    shown = employees[:MAX]
-    name_counts: dict[str, int] = {}
-    for e in shown:
-        name_counts[e["ФИО"]] = name_counts.get(e["ФИО"], 0) + 1
-    emp_map: dict[str, int] = {}
-    rows = []
-    for e in shown:
-        fio = e["ФИО"]
-        label = f"{fio} ({e.get('Телефон') or '—'})" if name_counts[fio] > 1 else fio
-        emp_map[label] = e["row_number"]
-        rows.append([KeyboardButton(text=label)])
-    rows.append([KeyboardButton(text="❌ Отмена")])
-    kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
-    note = f" (показаны первые {MAX}, уточните поиск)" if len(employees) > MAX else ""
-    await state.update_data(emp_map=emp_map)
-    await state.set_state(next_state)
-    await message.answer(f"Найдено: {len(employees)}{note}\n\nВыберите сотрудника:", reply_markup=kb)
 
 
 @router.message(AdminActions.waiting_find_employee)
@@ -657,282 +613,6 @@ async def action_delete_confirm(message: Message, state: FSMContext):
 @router.message(F.text == "👥 Администраторы")
 async def btn_admins(message: Message):
     await cmd_admins(message)
-
-
-def normalize_phone_input(phone_raw: str) -> str | None:
-    phone_clean = re.sub(r"[^\d+]", "", phone_raw.strip())
-    if re.match(r"^\+7\d{10}$", phone_clean):
-        return phone_clean
-    digits = re.sub(r"\D", "", phone_raw)
-    if len(digits) == 11 and digits.startswith("8"):
-        return f"+7{digits[1:]}"
-    if len(digits) == 11 and digits.startswith("7"):
-        return f"+{digits}"
-    if len(digits) == 10:
-        return f"+7{digits}"
-    return None
-
-
-def resolve_subdivision(position: str) -> str | None:
-    sub = POSITION_TO_SUBDIVISION.get(position, "").strip()
-    active = get_subdivision_names()
-    if sub and sub in active:
-        return sub
-    return None
-
-
-def fmt_date(iso_str: str) -> str:
-    """Converts YYYY-MM-DD (storage) → DD-MM-YYYY (display)."""
-    if not iso_str:
-        return iso_str
-    try:
-        return datetime.strptime(iso_str, "%Y-%m-%d").strftime("%d-%m-%Y")
-    except ValueError:
-        return iso_str
-
-
-def pd_consent_value() -> str:
-    return f"да {datetime.now().strftime('%Y-%m-%d')}"
-
-
-def is_admin_user(user_id: int) -> bool:
-    return has_admin_access(user_id)
-
-
-def is_owner_user(user_id: int) -> bool:
-    return has_owner_access(user_id)
-
-
-def parse_yes_no(value: str) -> str | None:
-    normalized = value.strip().lower()
-    if normalized in {"да", "yes", "y", "1", "true"}:
-        return "да"
-    if normalized in {"нет", "no", "n", "0", "false"}:
-        return "нет"
-    return None
-
-
-def resolve_edit_field(raw_field: str) -> str | None:
-    return EDIT_FIELD_ALIASES.get(raw_field.strip().lower())
-
-
-def resolve_admin_role(raw_role: str) -> str | None:
-    return ADMIN_ROLE_ALIASES.get(raw_role.strip().lower())
-
-
-def admin_role_label(role: str) -> str:
-    return ADMIN_ROLE_LABELS.get(role, role or "—")
-
-
-def user_display_name(message: Message) -> str:
-    return message.from_user.full_name or "Без имени"
-
-
-def user_username(message: Message) -> str:
-    return message.from_user.username or ""
-
-
-def actor_identity(message: Message) -> str:
-    username = f" @{message.from_user.username}" if message.from_user.username else ""
-    return f"{message.from_user.id}{username}"
-
-
-def admin_status_text(admin: dict | None, user_id: int) -> str:
-    if DEVELOPER_CHAT_ID and user_id == DEVELOPER_CHAT_ID:
-        return "активен (владелец через .env)"
-    if not admin:
-        return "доступ не выдан"
-    if admin["state"] == "pending":
-        return "заявка ожидает подтверждения"
-    if admin["state"] == "inactive":
-        return "доступ отключен"
-    return f"активен ({admin_role_label(admin['role'])})"
-
-
-def admin_card(admin: dict) -> str:
-    username = f"@{admin['username']}" if admin.get("username") else "—"
-    subdivision = admin.get("subdivision") or "все подразделения"
-    request_date = admin.get("requested_at") or "—"
-    grant_date = admin.get("granted_at") or "—"
-    return (
-        f"{admin['chat_id']} | {admin.get('fio') or '—'}\n"
-        f"Username: {username}\n"
-        f"Роль: {admin_role_label(admin['role'])}\n"
-        f"Подразделение: {subdivision}\n"
-        f"Статус: {admin_status_text(admin, admin['chat_id'])}\n"
-        f"Дата запроса: {request_date}\n"
-        f"Дата выдачи: {grant_date}"
-    )
-
-
-def employee_status_text(employee: dict) -> str:
-    expiry_str = (employee.get("Дата окончания") or "").strip()
-    status_marker = (employee.get("Статус уведомлений") or "").strip().lower()
-    if status_marker == "в процессе":
-        return "🟡 В процессе"
-    if not expiry_str:
-        return "❓ Дата не указана"
-    try:
-        expiry = datetime.strptime(expiry_str, "%Y-%m-%d").date()
-    except ValueError:
-        return f"❓ Некорректная дата: {expiry_str}"
-    delta = (expiry - datetime.now().date()).days
-    if delta < 0:
-        return f"🔴 Просрочена на {abs(delta)} дн."
-    if delta == 0:
-        return "🔴 Истекает сегодня"
-    if delta == 1:
-        return "🟠 Истекает завтра"
-    if delta <= 7:
-        return f"🟠 Истекает через {delta} дн."
-    return f"✅ Активна (до {fmt_date(expiry_str)})"
-
-
-def employee_card(employee: dict) -> str:
-    fio = employee.get("ФИО") or "—"
-    phone = employee.get("Телефон") or "—"
-    position = employee.get("Должность") or "—"
-    expiry = fmt_date(employee.get("Дата окончания") or "") or "—"
-    chat_id = employee.get("Chat ID") or "—"
-    sub = employee.get("Подразделение") or "—"
-    in_main = employee.get("В главной группе") or "—"
-    in_sub = employee.get("В группе подразделения") or "—"
-    status = employee_status_text(employee)
-    return (
-        f"👤 {fio}\n"
-        f"📱 Телефон: {phone}\n"
-        f"💼 Должность: {position}\n"
-        f"🏢 Подразделение: {sub}\n"
-        f"📅 Дата окончания: {expiry}\n"
-        f"Статус: {status}\n"
-        f"Chat ID: {chat_id}\n"
-        f"В главной группе: {in_main}\n"
-        f"В группе подразделения: {in_sub}"
-    )
-
-
-def find_single_employee(query: str) -> tuple[dict | None, str | None]:
-    matches = search_employees(query)
-    if not matches:
-        return None, "Сотрудник не найден."
-    if len(matches) > 1:
-        lines = [
-            f"{emp['ФИО']} | {emp.get('Телефон') or '—'} | {emp.get('Должность') or '—'}"
-            for emp in matches[:10]
-        ]
-        suffix = ""
-        if len(matches) > 10:
-            suffix = f"\n\nНайдено {len(matches)} совпадений. Уточните ФИО или номер телефона."
-        return None, "Найдено несколько сотрудников:\n" + "\n".join(lines) + suffix
-    return matches[0], None
-
-
-def _apply_employee_edit(row_number: int, field: str, new_value: str) -> str | None:
-    """Applies one field update. Returns an error string if validation fails, None on success."""
-    if field == "expiry":
-        try:
-            expiry_date = datetime.strptime(new_value, "%d-%m-%Y").date()
-        except ValueError:
-            return "Дата должна быть в формате ДД-ММ-ГГГГ, например 31-12-2026."
-        update_employee_cell(row_number, COL_EXPIRY, expiry_date.isoformat())
-        delta = (expiry_date - datetime.now().date()).days
-        if delta <= 0:
-            set_row_red(row_number)
-            set_employee_status(row_number, "expired")
-        else:
-            set_row_default(row_number)
-            clear_employee_status(row_number)
-    elif field == "phone":
-        normalized_phone = normalize_phone_input(new_value)
-        if not normalized_phone:
-            return "Телефон должен быть в формате +79161234567."
-        update_employee_cell(row_number, COL_PHONE, normalized_phone)
-    elif field == "position":
-        update_employee_cell(row_number, COL_POSITION, new_value)
-        auto_sub = resolve_subdivision(new_value)
-        if auto_sub:
-            update_employee_cell(row_number, COL_SUBDIVISION, auto_sub)
-    elif field == "subdivision":
-        subdivisions = get_subdivision_names()
-        normalized_sub = "" if new_value in {"-", "пусто", "none"} else new_value
-        if subdivisions and normalized_sub and normalized_sub not in subdivisions:
-            names_text = "\n".join(f"• {name}" for name in subdivisions)
-            return f"Такого подразделения нет в листе «Группы». Доступные варианты:\n\n{names_text}"
-        update_employee_cell(row_number, COL_SUBDIVISION, normalized_sub)
-    elif field == "main_group":
-        parsed = parse_yes_no(new_value)
-        if not parsed:
-            return "Для поля «главная» используй значение да или нет."
-        update_employee_cell(row_number, COL_IN_MAIN, parsed)
-    elif field == "sub_group":
-        parsed = parse_yes_no(new_value)
-        if not parsed:
-            return "Для поля «подгруппа» используй значение да или нет."
-        update_employee_cell(row_number, COL_IN_SUB, parsed)
-    return None
-
-
-async def notify_admins(message: Message, text: str):
-    for admin_id in get_notification_admin_ids():
-        try:
-            await message.bot.send_message(admin_id, text)
-        except Exception:
-            pass
-
-
-async def finish_registration(message: Message, state: FSMContext, row_num: int | None, is_new: bool):
-    data = await state.get_data()
-    fio = data["fio"]
-    phone = data["phone"]
-    position = data["position"]
-    subdivision = data["subdivision"]
-    consent = data["consent"]
-    chat_id = message.from_user.id
-
-    if is_new:
-        add_employee_row(
-            fio=fio,
-            phone=phone,
-            position=position,
-            chat_id=chat_id,
-            subdivision=subdivision,
-            pd_consent=consent,
-        )
-    else:
-        # Защита от гонки: перепроверяем что строка ещё не занята другим пользователем
-        current_chat_id = get_cell(row_num, COL_CHAT_ID)
-        if current_chat_id and current_chat_id != str(chat_id):
-            await state.clear()
-            await message.answer(
-                "Ваши данные уже были зарегистрированы в другом аккаунте. "
-                "Обратитесь к администратору.",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            return
-        complete_employee_registration(
-            row_num,
-            chat_id=chat_id,
-            position=position,
-            subdivision=subdivision,
-            pd_consent=consent,
-            phone=phone,
-        )
-
-    await message.answer(
-        "Регистрация завершена!\n\n"
-        f"ФИО: {fio}\n"
-        f"Телефон: {phone}\n"
-        f"Должность: {position}\n"
-        f"Подразделение: {subdivision}\n\n"
-        "Напоминания о медкнижке начнут приходить после того, как администратор "
-        "укажет дату окончания в таблице.",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    await notify_admins(
-        message,
-        f"🆕 Новая регистрация:\n{fio}\n{phone}\n{position} — {subdivision}",
-    )
-    await state.clear()
 
 
 @router.message(F.text == "/start")
@@ -1367,14 +1047,9 @@ async def cmd_mycard(message: Message):
         return
     emp = get_employee_row_dict(row)
     expiry_display = fmt_date(emp.get("Дата окончания") or "") or "не указана"
-    status = employee_status_text(emp)
+    status_text = employee_card(emp)
     await message.answer(
-        "Ваша карточка:\n\n"
-        f"ФИО: {emp.get('ФИО') or '—'}\n"
-        f"Должность: {emp.get('Должность') or '—'}\n"
-        f"Подразделение: {emp.get('Подразделение') or '—'}\n"
-        f"Дата окончания медкнижки: {expiry_display}\n"
-        f"Статус: {status}"
+        "Ваша карточка:\n\n" + status_text
     )
 
 
