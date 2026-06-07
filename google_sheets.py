@@ -395,9 +395,25 @@ def _col_letter(col: int) -> str:
     return result
 
 
-def get_subdivision_names():
-    """Список названий подразделений из листа «Группы»."""
-    return list(get_sub_groups().keys())
+def get_subdivision_names() -> list[str]:
+    """Все названия подразделений из листа «Группы» — включая те, у которых нет Telegram-группы.
+    Используется для UI-фильтров и валидации. Для отправки в группы используй get_sub_groups()."""
+    cached = _cache_get("subdivision_names")
+    if cached is not None:
+        return cached
+    ws = get_groups_sheet()
+    records = ws.get_all_records()
+    names = []
+    for rec in records:
+        name = (
+            rec.get("Подразделение")
+            or rec.get("Должность")
+            or ""
+        ).strip()
+        if name and name not in names:
+            names.append(name)
+    _cache_set("subdivision_names", names, _CACHE_TTL_GROUPS)
+    return names
 
 
 @retry(**_RETRY_KWARGS)
