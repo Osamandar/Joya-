@@ -1,6 +1,8 @@
 import asyncio
 import logging
 
+logger = logging.getLogger(__name__)
+
 # FIX #3: используем zoneinfo для корректного московского времени
 from zoneinfo import ZoneInfo
 from datetime import datetime
@@ -156,9 +158,9 @@ async def send_safe(bot: Bot, chat_id: int | None, text: str):
     try:
         await bot.send_message(chat_id, text)
     except Exception as e:
-        logging.error(f"Failed to send to {chat_id}: {e}")
+        logger.error("Не удалось отправить сообщение в %s: %s", chat_id, e)
         if DEVELOPER_CHAT_ID:
             try:
                 await bot.send_message(DEVELOPER_CHAT_ID, f"Ошибка отправки в {chat_id}: {e}")
-            except Exception:
-                pass
+            except Exception as dev_exc:
+                logger.warning("Не удалось уведомить разработчика об ошибке: %s", dev_exc)

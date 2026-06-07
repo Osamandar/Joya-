@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 
 from aiogram import Router, F
@@ -88,6 +89,7 @@ from validators import (
 )
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 class Registration(StatesGroup):
@@ -172,6 +174,7 @@ async def _show_list_result(message: Message, subdivision: str | None, days: int
                 if subdivision is None or (e.get("Подразделение") or "").strip() == subdivision:
                     expiring.append(e)
         except Exception:
+            logger.debug("Пропуск сотрудника с некорректной датой: %s", e.get("ФИО"))
             continue
     sub_label = f" ({subdivision})" if subdivision else ""
     if not expiring:
@@ -196,6 +199,7 @@ async def _show_expired_result(message: Message, subdivision: str | None):
                 if subdivision is None or (e.get("Подразделение") or "").strip() == subdivision:
                     expired_raw.append(e)
         except Exception:
+            logger.debug("Пропуск сотрудника с некорректной датой: %s", e.get("ФИО"))
             continue
     sub_label = f" ({subdivision})" if subdivision else ""
     if not expired_raw:
@@ -247,8 +251,8 @@ async def notify_admins(message: Message, text: str):
     for admin_id in get_notification_admin_ids():
         try:
             await message.bot.send_message(admin_id, text)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Не удалось отправить уведомление админу %s: %s", admin_id, e)
 
 
 async def finish_registration(message: Message, state: FSMContext, row_num: int | None, is_new: bool):
@@ -897,8 +901,8 @@ async def cmd_approve_admin(message: Message):
             f"Роль: {admin_role_label(admin['role'])}\n"
             "Нажмите / чтобы увидеть доступные команды."
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Не удалось уведомить пользователя %s о выдаче доступа: %s", target_chat_id, e)
 
 
 @router.message(F.text.startswith("/revoke_admin"))
@@ -935,8 +939,8 @@ async def cmd_revoke_admin(message: Message):
             target_chat_id,
             "Ваш админ-доступ в боте отключён."
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Не удалось уведомить пользователя %s об отзыве доступа: %s", target_chat_id, e)
 
 
 @router.message(F.text.startswith("/check"))
@@ -1230,7 +1234,8 @@ async def action_broadcast_confirm(message: Message, state: FSMContext):
         try:
             await message.bot.send_message(int(chat_id_str), text)
             sent += 1
-        except Exception:
+        except Exception as e:
+            logger.warning("Рассылка: не удалось отправить пользователю %s: %s", chat_id_str, e)
             failed += 1
     await state.clear()
     kb = get_owner_keyboard() if is_owner_user(message.from_user.id) else get_admin_keyboard()

@@ -35,8 +35,8 @@ async def redis_healthcheck(bot: Bot, storage):
             if DEVELOPER_CHAT_ID:
                 try:
                     await bot.send_message(DEVELOPER_CHAT_ID, "✅ Redis соединение восстановлено, FSM работает нормально.")
-                except Exception:
-                    pass
+                except Exception as notify_exc:
+                    logger.warning("Не удалось уведомить разработчика о восстановлении Redis: %s", notify_exc)
     except Exception as exc:
         if _redis_was_healthy:
             _redis_was_healthy = False
@@ -47,8 +47,8 @@ async def redis_healthcheck(bot: Bot, storage):
                         DEVELOPER_CHAT_ID,
                         f"⚠️ Redis недоступен: {exc}\nFSM-состояния пользователей могут быть потеряны.",
                     )
-                except Exception:
-                    pass
+                except Exception as notify_exc:
+                    logger.warning("Не удалось уведомить разработчика о проблеме Redis: %s", notify_exc)
 
 
 async def _build_storage():
